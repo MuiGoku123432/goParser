@@ -9,7 +9,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/godror/godror"
 	"github.com/joho/godotenv"
 )
 
@@ -85,318 +84,400 @@ func (c *OracleGraphClient) initializeGraph() error {
 	}
 
 	if count == 0 {
-		// Create vertex tables
-		tables := []string{
-			fmt.Sprintf(`CREATE TABLE %s_FILE_VT (
-				VID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
-				PATH VARCHAR2(1000) UNIQUE NOT NULL,
-				LANGUAGE VARCHAR2(20),
-				CREATED TIMESTAMP DEFAULT SYSTIMESTAMP,
-				UPDATED TIMESTAMP
-			)`, c.graphName),
-
-			fmt.Sprintf(`CREATE TABLE %s_FUNCTION_VT (
-				VID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
-				NAME VARCHAR2(255) NOT NULL,
-				FILE_PATH VARCHAR2(1000) NOT NULL,
-				START_LINE NUMBER,
-				END_LINE NUMBER,
-				SIGNATURE VARCHAR2(1000),
-				IS_ASYNC NUMBER(1) DEFAULT 0,
-				IS_EXPORT NUMBER(1) DEFAULT 0,
-				CREATED TIMESTAMP DEFAULT SYSTIMESTAMP,
-				UPDATED TIMESTAMP,
-				UNIQUE (NAME, FILE_PATH)
-			)`, c.graphName),
-
-			fmt.Sprintf(`CREATE TABLE %s_IMPORT_VT (
-				VID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
-				MODULE VARCHAR2(500) UNIQUE NOT NULL,
-				CREATED TIMESTAMP DEFAULT SYSTIMESTAMP,
-				UPDATED TIMESTAMP
-			)`, c.graphName),
-
-			fmt.Sprintf(`CREATE TABLE %s_VARIABLE_VT (
-				VID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
-				NAME VARCHAR2(255) NOT NULL,
-				FILE_PATH VARCHAR2(1000) NOT NULL,
-				VAR_TYPE VARCHAR2(100),
-				IS_CONST NUMBER(1) DEFAULT 0,
-				IS_LET NUMBER(1) DEFAULT 0,
-				START_LINE NUMBER,
-				CREATED TIMESTAMP DEFAULT SYSTIMESTAMP,
-				UPDATED TIMESTAMP,
-				UNIQUE (NAME, FILE_PATH)
-			)`, c.graphName),
-
-			fmt.Sprintf(`CREATE TABLE %s_TYPE_VT (
-				VID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
-				NAME VARCHAR2(255) NOT NULL,
-				FILE_PATH VARCHAR2(1000) NOT NULL,
-				KIND VARCHAR2(50),
-				DEFINITION CLOB,
-				IS_EXPORT NUMBER(1) DEFAULT 0,
-				CREATED TIMESTAMP DEFAULT SYSTIMESTAMP,
-				UPDATED TIMESTAMP,
-				UNIQUE (NAME, FILE_PATH)
-			)`, c.graphName),
-
-			fmt.Sprintf(`CREATE TABLE %s_INTERFACE_VT (
-				VID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
-				NAME VARCHAR2(255) NOT NULL,
-				FILE_PATH VARCHAR2(1000) NOT NULL,
-				IS_EXPORT NUMBER(1) DEFAULT 0,
-				PROPERTIES CLOB,
-				CREATED TIMESTAMP DEFAULT SYSTIMESTAMP,
-				UPDATED TIMESTAMP,
-				UNIQUE (NAME, FILE_PATH)
-			)`, c.graphName),
-
-			fmt.Sprintf(`CREATE TABLE %s_CLASS_VT (
-				VID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
-				NAME VARCHAR2(255) NOT NULL,
-				FILE_PATH VARCHAR2(1000) NOT NULL,
-				START_LINE NUMBER,
-				END_LINE NUMBER,
-				IS_EXPORT NUMBER(1) DEFAULT 0,
-				IS_ABSTRACT NUMBER(1) DEFAULT 0,
-				METHODS CLOB,
-				CREATED TIMESTAMP DEFAULT SYSTIMESTAMP,
-				UPDATED TIMESTAMP,
-				UNIQUE (NAME, FILE_PATH)
-			)`, c.graphName),
-
-			fmt.Sprintf(`CREATE TABLE %s_CONSTANT_VT (
-				VID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
-				NAME VARCHAR2(255) NOT NULL,
-				FILE_PATH VARCHAR2(1000) NOT NULL,
-				VALUE VARCHAR2(1000),
-				CREATED TIMESTAMP DEFAULT SYSTIMESTAMP,
-				UPDATED TIMESTAMP,
-				UNIQUE (NAME, FILE_PATH)
-			)`, c.graphName),
-
-			fmt.Sprintf(`CREATE TABLE %s_JSXELEMENT_VT (
-				VID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
-				TAG_NAME VARCHAR2(255) NOT NULL,
-				FILE_PATH VARCHAR2(1000) NOT NULL,
-				LINE_NUM NUMBER,
-				CONTAINING_COMPONENT VARCHAR2(255),
-				PROPS CLOB,
-				IS_CUSTOM_COMPONENT NUMBER(1) DEFAULT 0,
-				CREATED TIMESTAMP DEFAULT SYSTIMESTAMP,
-				UPDATED TIMESTAMP
-			)`, c.graphName),
-
-			fmt.Sprintf(`CREATE TABLE %s_CSSRULE_VT (
-				VID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
-				SELECTOR VARCHAR2(500) NOT NULL,
-				FILE_PATH VARCHAR2(1000) NOT NULL,
-				RULE_TYPE VARCHAR2(50),
-				LINE_NUM NUMBER,
-				PROPERTY_NAME VARCHAR2(255),
-				VALUE VARCHAR2(1000),
-				CREATED TIMESTAMP DEFAULT SYSTIMESTAMP,
-				UPDATED TIMESTAMP,
-				UNIQUE (SELECTOR, FILE_PATH)
-			)`, c.graphName),
-
-			fmt.Sprintf(`CREATE TABLE %s_UNRESOLVED_CALL_VT (
-				VID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
-				CALLED_FUNC VARCHAR2(255) NOT NULL,
-				CALLER_FILE VARCHAR2(1000) NOT NULL,
-				CALLER_FUNC VARCHAR2(255),
-				LINE_NUM NUMBER,
-				CALL_CONTEXT VARCHAR2(255),
-				CREATED TIMESTAMP DEFAULT SYSTIMESTAMP,
-				UNIQUE (CALLED_FUNC, CALLER_FILE, CALLER_FUNC, LINE_NUM)
-			)`, c.graphName),
+		// First, create all vertex tables
+		if err := c.createVertexTables(); err != nil {
+			return fmt.Errorf("failed to create vertex tables: %w", err)
 		}
 
-		// Create edge tables
-		edgeTables := []string{
-			fmt.Sprintf(`CREATE TABLE %s_BELONGS_TO_ET (
-				EID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
-				SOURCE_VID NUMBER NOT NULL,
-				DEST_VID NUMBER NOT NULL,
-				CREATED TIMESTAMP DEFAULT SYSTIMESTAMP
-			)`, c.graphName),
-
-			fmt.Sprintf(`CREATE TABLE %s_IMPORTS_ET (
-				EID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
-				SOURCE_VID NUMBER NOT NULL,
-				DEST_VID NUMBER NOT NULL,
-				IMPORTED_NAMES CLOB,
-				IS_DEFAULT NUMBER(1) DEFAULT 0,
-				IS_NAMESPACE NUMBER(1) DEFAULT 0,
-				CREATED TIMESTAMP DEFAULT SYSTIMESTAMP,
-				UPDATED TIMESTAMP
-			)`, c.graphName),
-
-			fmt.Sprintf(`CREATE TABLE %s_CALLS_ET (
-				EID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
-				SOURCE_VID NUMBER NOT NULL,
-				DEST_VID NUMBER NOT NULL,
-				CALL_LOCATION NUMBER,
-				CALL_CONTEXT VARCHAR2(255),
-				CREATED TIMESTAMP DEFAULT SYSTIMESTAMP,
-				UPDATED TIMESTAMP
-			)`, c.graphName),
-
-			fmt.Sprintf(`CREATE TABLE %s_USES_TYPE_ET (
-				EID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
-				SOURCE_VID NUMBER NOT NULL,
-				DEST_VID NUMBER NOT NULL,
-				USAGE_CONTEXT VARCHAR2(100),
-				USAGE_LOCATION NUMBER,
-				USING_ENTITY VARCHAR2(255),
-				CREATED TIMESTAMP DEFAULT SYSTIMESTAMP,
-				UPDATED TIMESTAMP
-			)`, c.graphName),
-
-			fmt.Sprintf(`CREATE TABLE %s_EXTENDS_ET (
-				EID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
-				SOURCE_VID NUMBER NOT NULL,
-				DEST_VID NUMBER NOT NULL,
-				CREATED TIMESTAMP DEFAULT SYSTIMESTAMP,
-				UPDATED TIMESTAMP
-			)`, c.graphName),
-
-			fmt.Sprintf(`CREATE TABLE %s_IMPLEMENTS_ET (
-				EID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
-				SOURCE_VID NUMBER NOT NULL,
-				DEST_VID NUMBER NOT NULL,
-				CREATED TIMESTAMP DEFAULT SYSTIMESTAMP,
-				UPDATED TIMESTAMP
-			)`, c.graphName),
-
-			fmt.Sprintf(`CREATE TABLE %s_DEFINED_IN_ET (
-				EID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
-				SOURCE_VID NUMBER NOT NULL,
-				DEST_VID NUMBER NOT NULL,
-				CREATED TIMESTAMP DEFAULT SYSTIMESTAMP
-			)`, c.graphName),
-
-			fmt.Sprintf(`CREATE TABLE %s_USED_IN_ET (
-				EID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
-				SOURCE_VID NUMBER NOT NULL,
-				DEST_VID NUMBER NOT NULL,
-				CREATED TIMESTAMP DEFAULT SYSTIMESTAMP
-			)`, c.graphName),
-
-			fmt.Sprintf(`CREATE TABLE %s_RENDERS_ET (
-				EID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
-				SOURCE_VID NUMBER NOT NULL,
-				DEST_VID NUMBER NOT NULL,
-				CREATED TIMESTAMP DEFAULT SYSTIMESTAMP
-			)`, c.graphName),
-
-			fmt.Sprintf(`CREATE TABLE %s_CONTAINS_ET (
-				EID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
-				SOURCE_VID NUMBER NOT NULL,
-				DEST_VID NUMBER NOT NULL,
-				CREATED TIMESTAMP DEFAULT SYSTIMESTAMP
-			)`, c.graphName),
-
-			fmt.Sprintf(`CREATE TABLE %s_CONTAINS_CALL_ET (
-				EID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
-				SOURCE_VID NUMBER NOT NULL,
-				DEST_VID NUMBER NOT NULL,
-				CREATED TIMESTAMP DEFAULT SYSTIMESTAMP
-			)`, c.graphName),
-
-			fmt.Sprintf(`CREATE TABLE %s_MAKES_CALL_ET (
-				EID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
-				SOURCE_VID NUMBER NOT NULL,
-				DEST_VID NUMBER NOT NULL,
-				CREATED TIMESTAMP DEFAULT SYSTIMESTAMP
-			)`, c.graphName),
+		// Then, create all edge tables
+		if err := c.createEdgeTables(); err != nil {
+			return fmt.Errorf("failed to create edge tables: %w", err)
 		}
 
-		// Create all tables
-		allTables := append(tables, edgeTables...)
-		for _, table := range allTables {
-			if _, err := c.db.Exec(table); err != nil {
-				return fmt.Errorf("failed to create table: %w", err)
-			}
-		}
-
-		// Create the property graph
-		pgDef := fmt.Sprintf(`
-			CREATE PROPERTY GRAPH %s
-			VERTEX TABLES (
-				%s_FILE_VT KEY (VID) LABEL FILE PROPERTIES (PATH, LANGUAGE),
-				%s_FUNCTION_VT KEY (VID) LABEL FUNCTION PROPERTIES ALL COLUMNS,
-				%s_IMPORT_VT KEY (VID) LABEL IMPORT PROPERTIES (MODULE),
-				%s_VARIABLE_VT KEY (VID) LABEL VARIABLE PROPERTIES ALL COLUMNS,
-				%s_TYPE_VT KEY (VID) LABEL TYPE PROPERTIES ALL COLUMNS,
-				%s_INTERFACE_VT KEY (VID) LABEL INTERFACE PROPERTIES ALL COLUMNS,
-				%s_CLASS_VT KEY (VID) LABEL CLASS PROPERTIES ALL COLUMNS,
-				%s_CONSTANT_VT KEY (VID) LABEL CONSTANT PROPERTIES ALL COLUMNS,
-				%s_JSXELEMENT_VT KEY (VID) LABEL JSXELEMENT PROPERTIES ALL COLUMNS,
-				%s_CSSRULE_VT KEY (VID) LABEL CSSRULE PROPERTIES ALL COLUMNS,
-				%s_UNRESOLVED_CALL_VT KEY (VID) LABEL UNRESOLVED_CALL PROPERTIES ALL COLUMNS
-			)
-			EDGE TABLES (
-				%s_BELONGS_TO_ET KEY (EID) 
-					SOURCE KEY (SOURCE_VID) REFERENCES %s_FUNCTION_VT (VID)
-					DESTINATION KEY (DEST_VID) REFERENCES %s_FILE_VT (VID)
-					LABEL BELONGS_TO NO PROPERTIES,
-				%s_IMPORTS_ET KEY (EID)
-					SOURCE KEY (SOURCE_VID) REFERENCES %s_FILE_VT (VID)
-					DESTINATION KEY (DEST_VID) REFERENCES %s_IMPORT_VT (VID)
-					LABEL IMPORTS PROPERTIES ALL COLUMNS,
-				%s_CALLS_ET KEY (EID)
-					SOURCE KEY (SOURCE_VID) REFERENCES %s_FUNCTION_VT (VID)
-					DESTINATION KEY (DEST_VID) REFERENCES %s_FUNCTION_VT (VID)
-					LABEL CALLS PROPERTIES ALL COLUMNS,
-				%s_USES_TYPE_ET KEY (EID)
-					SOURCE KEY (SOURCE_VID) REFERENCES %s_FILE_VT (VID)
-					DESTINATION KEY (DEST_VID) REFERENCES %s_TYPE_VT (VID)
-					LABEL USES_TYPE PROPERTIES ALL COLUMNS,
-				%s_EXTENDS_ET KEY (EID)
-					SOURCE KEY (SOURCE_VID) REFERENCES %s_CLASS_VT (VID)
-					DESTINATION KEY (DEST_VID) REFERENCES %s_CLASS_VT (VID)
-					LABEL EXTENDS NO PROPERTIES,
-				%s_IMPLEMENTS_ET KEY (EID)
-					SOURCE KEY (SOURCE_VID) REFERENCES %s_CLASS_VT (VID)
-					DESTINATION KEY (DEST_VID) REFERENCES %s_INTERFACE_VT (VID)
-					LABEL IMPLEMENTS NO PROPERTIES,
-				%s_DEFINED_IN_ET KEY (EID)
-					SOURCE KEY (SOURCE_VID) REFERENCES %s_VARIABLE_VT (VID)
-					DESTINATION KEY (DEST_VID) REFERENCES %s_FILE_VT (VID)
-					LABEL DEFINED_IN NO PROPERTIES,
-				%s_USED_IN_ET KEY (EID)
-					SOURCE KEY (SOURCE_VID) REFERENCES %s_JSXELEMENT_VT (VID)
-					DESTINATION KEY (DEST_VID) REFERENCES %s_FILE_VT (VID)
-					LABEL USED_IN NO PROPERTIES,
-				%s_RENDERS_ET KEY (EID)
-					SOURCE KEY (SOURCE_VID) REFERENCES %s_FUNCTION_VT (VID)
-					DESTINATION KEY (DEST_VID) REFERENCES %s_JSXELEMENT_VT (VID)
-					LABEL RENDERS NO PROPERTIES,
-				%s_CONTAINS_ET KEY (EID)
-					SOURCE KEY (SOURCE_VID) REFERENCES %s_FILE_VT (VID)
-					DESTINATION KEY (DEST_VID) REFERENCES %s_UNRESOLVED_CALL_VT (VID)
-					LABEL CONTAINS NO PROPERTIES,
-				%s_CONTAINS_CALL_ET KEY (EID)
-					SOURCE KEY (SOURCE_VID) REFERENCES %s_FILE_VT (VID)
-					DESTINATION KEY (DEST_VID) REFERENCES %s_UNRESOLVED_CALL_VT (VID)
-					LABEL CONTAINS_CALL NO PROPERTIES,
-				%s_MAKES_CALL_ET KEY (EID)
-					SOURCE KEY (SOURCE_VID) REFERENCES %s_FUNCTION_VT (VID)
-					DESTINATION KEY (DEST_VID) REFERENCES %s_UNRESOLVED_CALL_VT (VID)
-					LABEL MAKES_CALL NO PROPERTIES
-			)
-		`, strings.Repeat(c.graphName+", ", 50))
-
-		// Note: The above is simplified. In practice, you'd build this string properly
-		// For brevity, I'll use a simpler approach
-
-		// Create property graph (simplified version)
-		_, err = c.db.Exec(fmt.Sprintf("CREATE PROPERTY GRAPH %s", c.graphName))
-		if err != nil {
+		// Finally, create the property graph
+		if err := c.createPropertyGraph(); err != nil {
 			return fmt.Errorf("failed to create property graph: %w", err)
 		}
+	}
+
+	return nil
+}
+
+// createVertexTables creates all vertex tables
+func (c *OracleGraphClient) createVertexTables() error {
+	tables := []string{
+		fmt.Sprintf(`CREATE TABLE %s_FILE_VT (
+			VID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
+			PATH VARCHAR2(1000) UNIQUE NOT NULL,
+			LANGUAGE VARCHAR2(20),
+			CREATED TIMESTAMP DEFAULT SYSTIMESTAMP,
+			UPDATED TIMESTAMP
+		)`, c.graphName),
+
+		fmt.Sprintf(`CREATE TABLE %s_FUNCTION_VT (
+			VID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
+			NAME VARCHAR2(255) NOT NULL,
+			FILE_PATH VARCHAR2(1000) NOT NULL,
+			START_LINE NUMBER,
+			END_LINE NUMBER,
+			SIGNATURE VARCHAR2(1000),
+			IS_ASYNC NUMBER(1) DEFAULT 0,
+			IS_EXPORT NUMBER(1) DEFAULT 0,
+			CREATED TIMESTAMP DEFAULT SYSTIMESTAMP,
+			UPDATED TIMESTAMP,
+			UNIQUE (NAME, FILE_PATH)
+		)`, c.graphName),
+
+		fmt.Sprintf(`CREATE TABLE %s_IMPORT_VT (
+			VID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
+			MODULE VARCHAR2(500) UNIQUE NOT NULL,
+			CREATED TIMESTAMP DEFAULT SYSTIMESTAMP,
+			UPDATED TIMESTAMP
+		)`, c.graphName),
+
+		fmt.Sprintf(`CREATE TABLE %s_VARIABLE_VT (
+			VID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
+			NAME VARCHAR2(255) NOT NULL,
+			FILE_PATH VARCHAR2(1000) NOT NULL,
+			VAR_TYPE VARCHAR2(100),
+			IS_CONST NUMBER(1) DEFAULT 0,
+			IS_LET NUMBER(1) DEFAULT 0,
+			START_LINE NUMBER,
+			CREATED TIMESTAMP DEFAULT SYSTIMESTAMP,
+			UPDATED TIMESTAMP,
+			UNIQUE (NAME, FILE_PATH)
+		)`, c.graphName),
+
+		fmt.Sprintf(`CREATE TABLE %s_TYPE_VT (
+			VID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
+			NAME VARCHAR2(255) NOT NULL,
+			FILE_PATH VARCHAR2(1000) NOT NULL,
+			KIND VARCHAR2(50),
+			DEFINITION CLOB,
+			IS_EXPORT NUMBER(1) DEFAULT 0,
+			CREATED TIMESTAMP DEFAULT SYSTIMESTAMP,
+			UPDATED TIMESTAMP,
+			UNIQUE (NAME, FILE_PATH)
+		)`, c.graphName),
+
+		fmt.Sprintf(`CREATE TABLE %s_INTERFACE_VT (
+			VID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
+			NAME VARCHAR2(255) NOT NULL,
+			FILE_PATH VARCHAR2(1000) NOT NULL,
+			IS_EXPORT NUMBER(1) DEFAULT 0,
+			PROPERTIES CLOB,
+			CREATED TIMESTAMP DEFAULT SYSTIMESTAMP,
+			UPDATED TIMESTAMP,
+			UNIQUE (NAME, FILE_PATH)
+		)`, c.graphName),
+
+		fmt.Sprintf(`CREATE TABLE %s_CLASS_VT (
+			VID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
+			NAME VARCHAR2(255) NOT NULL,
+			FILE_PATH VARCHAR2(1000) NOT NULL,
+			START_LINE NUMBER,
+			END_LINE NUMBER,
+			IS_EXPORT NUMBER(1) DEFAULT 0,
+			IS_ABSTRACT NUMBER(1) DEFAULT 0,
+			METHODS CLOB,
+			CREATED TIMESTAMP DEFAULT SYSTIMESTAMP,
+			UPDATED TIMESTAMP,
+			UNIQUE (NAME, FILE_PATH)
+		)`, c.graphName),
+
+		fmt.Sprintf(`CREATE TABLE %s_CONSTANT_VT (
+			VID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
+			NAME VARCHAR2(255) NOT NULL,
+			FILE_PATH VARCHAR2(1000) NOT NULL,
+			VALUE VARCHAR2(1000),
+			CREATED TIMESTAMP DEFAULT SYSTIMESTAMP,
+			UPDATED TIMESTAMP,
+			UNIQUE (NAME, FILE_PATH)
+		)`, c.graphName),
+
+		fmt.Sprintf(`CREATE TABLE %s_JSXELEMENT_VT (
+			VID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
+			TAG_NAME VARCHAR2(255) NOT NULL,
+			FILE_PATH VARCHAR2(1000) NOT NULL,
+			LINE_NUM NUMBER,
+			CONTAINING_COMPONENT VARCHAR2(255),
+			PROPS CLOB,
+			IS_CUSTOM_COMPONENT NUMBER(1) DEFAULT 0,
+			CREATED TIMESTAMP DEFAULT SYSTIMESTAMP,
+			UPDATED TIMESTAMP
+		)`, c.graphName),
+
+		fmt.Sprintf(`CREATE TABLE %s_CSSRULE_VT (
+			VID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
+			SELECTOR VARCHAR2(500) NOT NULL,
+			FILE_PATH VARCHAR2(1000) NOT NULL,
+			RULE_TYPE VARCHAR2(50),
+			LINE_NUM NUMBER,
+			PROPERTY_NAME VARCHAR2(255),
+			VALUE VARCHAR2(1000),
+			CREATED TIMESTAMP DEFAULT SYSTIMESTAMP,
+			UPDATED TIMESTAMP,
+			UNIQUE (SELECTOR, FILE_PATH)
+		)`, c.graphName),
+
+		fmt.Sprintf(`CREATE TABLE %s_UNRESOLVED_CALL_VT (
+			VID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
+			CALLED_FUNC VARCHAR2(255) NOT NULL,
+			CALLER_FILE VARCHAR2(1000) NOT NULL,
+			CALLER_FUNC VARCHAR2(255),
+			LINE_NUM NUMBER,
+			CALL_CONTEXT VARCHAR2(255),
+			CREATED TIMESTAMP DEFAULT SYSTIMESTAMP,
+			UNIQUE (CALLED_FUNC, CALLER_FILE, CALLER_FUNC, LINE_NUM)
+		)`, c.graphName),
+	}
+
+	for _, table := range tables {
+		if _, err := c.db.Exec(table); err != nil {
+			return fmt.Errorf("failed to create table: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// createEdgeTables creates all edge tables
+func (c *OracleGraphClient) createEdgeTables() error {
+	edgeTables := []string{
+		fmt.Sprintf(`CREATE TABLE %s_BELONGS_TO_ET (
+			EID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
+			SOURCE_VID NUMBER NOT NULL,
+			DEST_VID NUMBER NOT NULL,
+			CREATED TIMESTAMP DEFAULT SYSTIMESTAMP
+		)`, c.graphName),
+
+		fmt.Sprintf(`CREATE TABLE %s_IMPORTS_ET (
+			EID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
+			SOURCE_VID NUMBER NOT NULL,
+			DEST_VID NUMBER NOT NULL,
+			IMPORTED_NAMES CLOB,
+			IS_DEFAULT NUMBER(1) DEFAULT 0,
+			IS_NAMESPACE NUMBER(1) DEFAULT 0,
+			CREATED TIMESTAMP DEFAULT SYSTIMESTAMP,
+			UPDATED TIMESTAMP
+		)`, c.graphName),
+
+		fmt.Sprintf(`CREATE TABLE %s_CALLS_ET (
+			EID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
+			SOURCE_VID NUMBER NOT NULL,
+			DEST_VID NUMBER NOT NULL,
+			CALL_LOCATION NUMBER,
+			CALL_CONTEXT VARCHAR2(255),
+			CREATED TIMESTAMP DEFAULT SYSTIMESTAMP,
+			UPDATED TIMESTAMP
+		)`, c.graphName),
+
+		fmt.Sprintf(`CREATE TABLE %s_USES_TYPE_ET (
+			EID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
+			SOURCE_VID NUMBER NOT NULL,
+			DEST_VID NUMBER NOT NULL,
+			USAGE_CONTEXT VARCHAR2(100),
+			USAGE_LOCATION NUMBER,
+			USING_ENTITY VARCHAR2(255),
+			CREATED TIMESTAMP DEFAULT SYSTIMESTAMP,
+			UPDATED TIMESTAMP
+		)`, c.graphName),
+
+		fmt.Sprintf(`CREATE TABLE %s_EXTENDS_ET (
+			EID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
+			SOURCE_VID NUMBER NOT NULL,
+			DEST_VID NUMBER NOT NULL,
+			CREATED TIMESTAMP DEFAULT SYSTIMESTAMP,
+			UPDATED TIMESTAMP
+		)`, c.graphName),
+
+		fmt.Sprintf(`CREATE TABLE %s_IMPLEMENTS_ET (
+			EID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
+			SOURCE_VID NUMBER NOT NULL,
+			DEST_VID NUMBER NOT NULL,
+			CREATED TIMESTAMP DEFAULT SYSTIMESTAMP,
+			UPDATED TIMESTAMP
+		)`, c.graphName),
+
+		fmt.Sprintf(`CREATE TABLE %s_DEFINED_IN_ET (
+			EID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
+			SOURCE_VID NUMBER NOT NULL,
+			DEST_VID NUMBER NOT NULL,
+			CREATED TIMESTAMP DEFAULT SYSTIMESTAMP
+		)`, c.graphName),
+
+		fmt.Sprintf(`CREATE TABLE %s_USED_IN_ET (
+			EID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
+			SOURCE_VID NUMBER NOT NULL,
+			DEST_VID NUMBER NOT NULL,
+			CREATED TIMESTAMP DEFAULT SYSTIMESTAMP
+		)`, c.graphName),
+
+		fmt.Sprintf(`CREATE TABLE %s_RENDERS_ET (
+			EID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
+			SOURCE_VID NUMBER NOT NULL,
+			DEST_VID NUMBER NOT NULL,
+			CREATED TIMESTAMP DEFAULT SYSTIMESTAMP
+		)`, c.graphName),
+
+		fmt.Sprintf(`CREATE TABLE %s_CONTAINS_ET (
+			EID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
+			SOURCE_VID NUMBER NOT NULL,
+			DEST_VID NUMBER NOT NULL,
+			CREATED TIMESTAMP DEFAULT SYSTIMESTAMP
+		)`, c.graphName),
+
+		fmt.Sprintf(`CREATE TABLE %s_CONTAINS_CALL_ET (
+			EID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
+			SOURCE_VID NUMBER NOT NULL,
+			DEST_VID NUMBER NOT NULL,
+			CREATED TIMESTAMP DEFAULT SYSTIMESTAMP
+		)`, c.graphName),
+
+		fmt.Sprintf(`CREATE TABLE %s_MAKES_CALL_ET (
+			EID NUMBER GENERATED AS IDENTITY PRIMARY KEY,
+			SOURCE_VID NUMBER NOT NULL,
+			DEST_VID NUMBER NOT NULL,
+			CREATED TIMESTAMP DEFAULT SYSTIMESTAMP
+		)`, c.graphName),
+	}
+
+	for _, table := range edgeTables {
+		if _, err := c.db.Exec(table); err != nil {
+			return fmt.Errorf("failed to create edge table: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// createPropertyGraph creates the property graph definition
+func (c *OracleGraphClient) createPropertyGraph() error {
+	// Build the CREATE PROPERTY GRAPH statement
+	pgDef := fmt.Sprintf(`
+CREATE PROPERTY GRAPH %s
+  VERTEX TABLES (
+    %s_FILE_VT KEY (VID) 
+      LABEL FILE 
+      PROPERTIES (PATH, LANGUAGE),
+    
+    %s_FUNCTION_VT KEY (VID) 
+      LABEL FUNCTION 
+      PROPERTIES ALL COLUMNS,
+    
+    %s_IMPORT_VT KEY (VID) 
+      LABEL IMPORT 
+      PROPERTIES (MODULE),
+    
+    %s_VARIABLE_VT KEY (VID) 
+      LABEL VARIABLE 
+      PROPERTIES ALL COLUMNS,
+    
+    %s_TYPE_VT KEY (VID) 
+      LABEL TYPE 
+      PROPERTIES ALL COLUMNS,
+    
+    %s_INTERFACE_VT KEY (VID) 
+      LABEL INTERFACE 
+      PROPERTIES ALL COLUMNS,
+    
+    %s_CLASS_VT KEY (VID) 
+      LABEL CLASS 
+      PROPERTIES ALL COLUMNS,
+    
+    %s_CONSTANT_VT KEY (VID) 
+      LABEL CONSTANT 
+      PROPERTIES ALL COLUMNS,
+    
+    %s_JSXELEMENT_VT KEY (VID) 
+      LABEL JSXELEMENT 
+      PROPERTIES ALL COLUMNS,
+    
+    %s_CSSRULE_VT KEY (VID) 
+      LABEL CSSRULE 
+      PROPERTIES ALL COLUMNS,
+    
+    %s_UNRESOLVED_CALL_VT KEY (VID) 
+      LABEL UNRESOLVED_CALL 
+      PROPERTIES ALL COLUMNS
+  )
+  EDGE TABLES (
+    %s_BELONGS_TO_ET KEY (EID) 
+      SOURCE KEY (SOURCE_VID) REFERENCES %s_FUNCTION_VT (VID)
+      DESTINATION KEY (DEST_VID) REFERENCES %s_FILE_VT (VID)
+      LABEL BELONGS_TO NO PROPERTIES,
+    
+    %s_IMPORTS_ET KEY (EID)
+      SOURCE KEY (SOURCE_VID) REFERENCES %s_FILE_VT (VID)
+      DESTINATION KEY (DEST_VID) REFERENCES %s_IMPORT_VT (VID)
+      LABEL IMPORTS PROPERTIES (IMPORTED_NAMES, IS_DEFAULT, IS_NAMESPACE),
+    
+    %s_CALLS_ET KEY (EID)
+      SOURCE KEY (SOURCE_VID) REFERENCES %s_FUNCTION_VT (VID)
+      DESTINATION KEY (DEST_VID) REFERENCES %s_FUNCTION_VT (VID)
+      LABEL CALLS PROPERTIES (CALL_LOCATION, CALL_CONTEXT),
+    
+    %s_USES_TYPE_ET KEY (EID)
+      SOURCE KEY (SOURCE_VID) REFERENCES %s_FILE_VT (VID)
+      DESTINATION KEY (DEST_VID) REFERENCES %s_TYPE_VT (VID)
+      LABEL USES_TYPE PROPERTIES (USAGE_CONTEXT, USAGE_LOCATION, USING_ENTITY),
+    
+    %s_EXTENDS_ET KEY (EID)
+      SOURCE KEY (SOURCE_VID) REFERENCES %s_CLASS_VT (VID)
+      DESTINATION KEY (DEST_VID) REFERENCES %s_CLASS_VT (VID)
+      LABEL EXTENDS NO PROPERTIES,
+    
+    %s_IMPLEMENTS_ET KEY (EID)
+      SOURCE KEY (SOURCE_VID) REFERENCES %s_CLASS_VT (VID)
+      DESTINATION KEY (DEST_VID) REFERENCES %s_INTERFACE_VT (VID)
+      LABEL IMPLEMENTS NO PROPERTIES,
+    
+    %s_DEFINED_IN_ET KEY (EID)
+      SOURCE KEY (SOURCE_VID) REFERENCES %s_VARIABLE_VT (VID)
+      DESTINATION KEY (DEST_VID) REFERENCES %s_FILE_VT (VID)
+      LABEL DEFINED_IN NO PROPERTIES,
+    
+    %s_USED_IN_ET KEY (EID)
+      SOURCE KEY (SOURCE_VID) REFERENCES %s_JSXELEMENT_VT (VID)
+      DESTINATION KEY (DEST_VID) REFERENCES %s_FILE_VT (VID)
+      LABEL USED_IN NO PROPERTIES,
+    
+    %s_RENDERS_ET KEY (EID)
+      SOURCE KEY (SOURCE_VID) REFERENCES %s_FUNCTION_VT (VID)
+      DESTINATION KEY (DEST_VID) REFERENCES %s_JSXELEMENT_VT (VID)
+      LABEL RENDERS NO PROPERTIES,
+    
+    %s_CONTAINS_CALL_ET KEY (EID)
+      SOURCE KEY (SOURCE_VID) REFERENCES %s_FILE_VT (VID)
+      DESTINATION KEY (DEST_VID) REFERENCES %s_UNRESOLVED_CALL_VT (VID)
+      LABEL CONTAINS_CALL NO PROPERTIES,
+    
+    %s_MAKES_CALL_ET KEY (EID)
+      SOURCE KEY (SOURCE_VID) REFERENCES %s_FUNCTION_VT (VID)
+      DESTINATION KEY (DEST_VID) REFERENCES %s_UNRESOLVED_CALL_VT (VID)
+      LABEL MAKES_CALL NO PROPERTIES
+  )`,
+		c.graphName,
+		// Vertex tables (11 entries)
+		c.graphName, c.graphName, c.graphName, c.graphName, c.graphName,
+		c.graphName, c.graphName, c.graphName, c.graphName, c.graphName, c.graphName,
+		// Edge tables with their references
+		c.graphName, c.graphName, c.graphName, // BELONGS_TO
+		c.graphName, c.graphName, c.graphName, // IMPORTS
+		c.graphName, c.graphName, c.graphName, // CALLS
+		c.graphName, c.graphName, c.graphName, // USES_TYPE
+		c.graphName, c.graphName, c.graphName, // EXTENDS
+		c.graphName, c.graphName, c.graphName, // IMPLEMENTS
+		c.graphName, c.graphName, c.graphName, // DEFINED_IN
+		c.graphName, c.graphName, c.graphName, // USED_IN
+		c.graphName, c.graphName, c.graphName, // RENDERS
+		c.graphName, c.graphName, c.graphName, // CONTAINS_CALL
+		c.graphName, c.graphName, c.graphName, // MAKES_CALL
+	)
+
+	_, err := c.db.Exec(pgDef)
+	if err != nil {
+		return fmt.Errorf("failed to create property graph: %w", err)
 	}
 
 	return nil
@@ -779,10 +860,21 @@ func (c *OracleGraphClient) UpsertJSXElement(ctx context.Context, jsx JSXElement
 		return err
 	}
 
-	// Get the inserted VID
-	vid, err := result.LastInsertId()
+	// Get the inserted VID using RETURNING clause would be better, but for now we'll query
+	var vid int64
+	err = c.db.QueryRowContext(ctx, fmt.Sprintf(`
+		SELECT VID FROM %s_JSXELEMENT_VT 
+		WHERE TAG_NAME = :1 AND FILE_PATH = :2 AND LINE_NUM = :3
+		ORDER BY CREATED DESC
+		FETCH FIRST 1 ROWS ONLY
+	`, c.graphName), jsx.TagName, jsx.FilePath, jsx.Line).Scan(&vid)
 	if err != nil {
-		return err
+		// Try to get LastInsertId if available
+		if id, err2 := result.LastInsertId(); err2 == nil {
+			vid = id
+		} else {
+			return fmt.Errorf("failed to get JSX element VID: %w", err)
+		}
 	}
 
 	// Create USED_IN edge
@@ -913,8 +1005,49 @@ func (c *OracleGraphClient) UpsertFunctionCall(ctx context.Context, call Functio
 		}
 
 		// Create edges for unresolved calls
-		// This would require additional queries to link the unresolved call
-		// to files and functions, similar to the Neo4j implementation
+		// Get the unresolved call VID
+		var ucVID int64
+		err = c.db.QueryRowContext(ctx, fmt.Sprintf(`
+			SELECT VID FROM %s_UNRESOLVED_CALL_VT
+			WHERE CALLED_FUNC = :1 AND CALLER_FILE = :2 
+			  AND CALLER_FUNC = :3 AND LINE_NUM = :4
+		`, c.graphName), call.CalledFunc, call.CallerFile, call.CallerFunc, call.CallLocation).Scan(&ucVID)
+		if err != nil {
+			return fmt.Errorf("failed to get unresolved call VID: %w", err)
+		}
+
+		// Create CONTAINS_CALL edge from file
+		query2 := fmt.Sprintf(`
+			INSERT INTO %s_CONTAINS_CALL_ET (SOURCE_VID, DEST_VID, CREATED)
+			SELECT f.VID, :1, SYSTIMESTAMP
+			FROM %s_FILE_VT f
+			WHERE f.PATH = :2
+			  AND NOT EXISTS (
+			    SELECT 1 FROM %s_CONTAINS_CALL_ET e2
+			    WHERE e2.SOURCE_VID = f.VID AND e2.DEST_VID = :1
+			  )
+		`, c.graphName, c.graphName, c.graphName)
+
+		_, err = c.db.ExecContext(ctx, query2, ucVID, call.CallerFile)
+		if err != nil {
+			return err
+		}
+
+		// Create MAKES_CALL edge from function if caller function exists
+		if call.CallerFunc != "" {
+			query3 := fmt.Sprintf(`
+				INSERT INTO %s_MAKES_CALL_ET (SOURCE_VID, DEST_VID, CREATED)
+				SELECT func.VID, :1, SYSTIMESTAMP
+				FROM %s_FUNCTION_VT func
+				WHERE func.NAME = :2 AND func.FILE_PATH = :3
+				  AND NOT EXISTS (
+				    SELECT 1 FROM %s_MAKES_CALL_ET e3
+				    WHERE e3.SOURCE_VID = func.VID AND e3.DEST_VID = :1
+				  )
+			`, c.graphName, c.graphName, c.graphName)
+
+			_, _ = c.db.ExecContext(ctx, query3, ucVID, call.CallerFunc, call.CallerFile)
+		}
 	}
 
 	return nil
@@ -1040,8 +1173,8 @@ func (c *OracleGraphClient) UpsertImplements(ctx context.Context, implements Imp
 // UpsertReference creates a generic reference (simplified for Oracle)
 func (c *OracleGraphClient) UpsertReference(ctx context.Context, ref ReferenceEntity) error {
 	// In Oracle Graph, we'd need a separate reference table
-	// For simplicity, this is omitted in this implementation
-	// You could create a REFERENCE_VT table and CONTAINS edges similar to other entities
+	// For now, this is a placeholder that could be implemented with a REFERENCE_VT table
+	// and appropriate edges similar to other entities
 	return nil
 }
 
@@ -1063,16 +1196,32 @@ func (c *OracleGraphClient) CreateIndexes(ctx context.Context) error {
 		{fmt.Sprintf("%s_JSXELEMENT_VT", c.graphName), "TAG_NAME"},
 		{fmt.Sprintf("%s_CSSRULE_VT", c.graphName), "SELECTOR"},
 		{fmt.Sprintf("%s_UNRESOLVED_CALL_VT", c.graphName), "CALLED_FUNC"},
+		// Edge table indexes
+		{fmt.Sprintf("%s_BELONGS_TO_ET", c.graphName), "SOURCE_VID"},
+		{fmt.Sprintf("%s_BELONGS_TO_ET", c.graphName), "DEST_VID"},
+		{fmt.Sprintf("%s_IMPORTS_ET", c.graphName), "SOURCE_VID"},
+		{fmt.Sprintf("%s_IMPORTS_ET", c.graphName), "DEST_VID"},
+		{fmt.Sprintf("%s_CALLS_ET", c.graphName), "SOURCE_VID"},
+		{fmt.Sprintf("%s_CALLS_ET", c.graphName), "DEST_VID"},
+		{fmt.Sprintf("%s_USES_TYPE_ET", c.graphName), "SOURCE_VID"},
+		{fmt.Sprintf("%s_USES_TYPE_ET", c.graphName), "DEST_VID"},
+		{fmt.Sprintf("%s_EXTENDS_ET", c.graphName), "SOURCE_VID"},
+		{fmt.Sprintf("%s_EXTENDS_ET", c.graphName), "DEST_VID"},
+		{fmt.Sprintf("%s_IMPLEMENTS_ET", c.graphName), "SOURCE_VID"},
+		{fmt.Sprintf("%s_IMPLEMENTS_ET", c.graphName), "DEST_VID"},
 	}
 
 	for _, idx := range indexes {
-		indexName := fmt.Sprintf("IDX_%s_%s", idx.table, idx.column)
+		indexName := fmt.Sprintf("IDX_%s_%s", strings.ToUpper(idx.table), strings.ToUpper(idx.column))
 		query := fmt.Sprintf("CREATE INDEX %s ON %s(%s)", indexName, idx.table, idx.column)
 
 		_, err := c.db.ExecContext(ctx, query)
 		if err != nil {
 			// Index might already exist, log but don't fail
-			godror.Log(godror.LogWarn, "index", "table", idx.table, "column", idx.column, "error", err)
+			// Oracle returns ORA-00955 if index already exists
+			if !strings.Contains(err.Error(), "ORA-00955") {
+				fmt.Printf("Warning: Failed to create index %s on %s.%s: %v\n", indexName, idx.table, idx.column, err)
+			}
 		}
 	}
 
