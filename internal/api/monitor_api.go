@@ -34,8 +34,9 @@ func NewMonitorAPI(m *monitor.EnhancedMonitor) *MonitorAPI {
 		monitor: m,
 		router:  mux.NewRouter(),
 		upgrader: websocket.Upgrader{
+			// Allow WebSocket connections from any origin since HTTP
+			// requests are also CORS enabled.
 			CheckOrigin: func(r *http.Request) bool {
-				// Configure CORS as needed
 				return true
 			},
 		},
@@ -43,6 +44,8 @@ func NewMonitorAPI(m *monitor.EnhancedMonitor) *MonitorAPI {
 	}
 
 	api.setupRoutes()
+	// Apply CORS middleware so the API can be called from the web viewer.
+	api.router.Use(corsMiddleware)
 	return api
 }
 

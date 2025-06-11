@@ -6,7 +6,7 @@ This document describes the HTTP and WebSocket API provided by the enhanced moni
 ./goparse-monitor-enhanced -root ./my-project -api-port 8080
 ```
 
-The API exposes JSON endpoints for status, statistics, file information and control commands as well as a WebSocket stream for real-time events.
+The API exposes JSON endpoints for status, statistics, file information and control commands as well as a WebSocket stream for real-time events. Cross-origin requests are allowed so you can connect to the API from a separate frontend app.
 
 ## REST Endpoints
 
