@@ -18,6 +18,7 @@ echo $NEO4J_PASS
 
 # For embeddings (optional)
 echo $OPENAI_API_KEY
+echo $OPENAI_BASE_URL
 ```
 
 ### 3. Build Successful

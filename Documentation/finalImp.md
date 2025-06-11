@@ -137,6 +137,7 @@ export NEO4J_PASS=your-password
 
 # For embeddings
 export OPENAI_API_KEY=sk-your-key
+export OPENAI_BASE_URL=https://api.openai.com
 
 # Run with all features
 ./goparse-monitor-enhanced \

@@ -121,6 +121,8 @@ ORACLE_EMBEDDINGS_TABLE=CODE_EMBEDDINGS
 
 # OpenAI Configuration (for embeddings)
 OPENAI_API_KEY=sk-your-openai-api-key
+# Optional: custom endpoint for self-hosted models
+OPENAI_BASE_URL=https://api.openai.com
 ```
 
 ### Database Setup
