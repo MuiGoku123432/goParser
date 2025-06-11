@@ -26,6 +26,7 @@ type OpenAIProvider struct {
 	apiKey     string
 	model      string
 	dimension  int
+	endpoint   string
 	httpClient *http.Client
 }
 
@@ -35,6 +36,12 @@ func NewOpenAIProvider(model string, dimension int) (*OpenAIProvider, error) {
 	if apiKey == "" {
 		return nil, fmt.Errorf("OPENAI_API_KEY environment variable not set")
 	}
+
+	endpoint := os.Getenv("OPENAI_BASE_URL")
+	if endpoint == "" {
+		endpoint = "https://api.openai.com"
+	}
+	endpoint = strings.TrimRight(endpoint, "/") + "/v1/embeddings"
 
 	// Validate model and dimension combinations
 	validModels := map[string][]int{
@@ -72,6 +79,7 @@ func NewOpenAIProvider(model string, dimension int) (*OpenAIProvider, error) {
 		apiKey:    apiKey,
 		model:     model,
 		dimension: dimension,
+		endpoint:  endpoint,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -113,7 +121,7 @@ func (p *OpenAIProvider) GenerateEmbeddings(ctx context.Context, texts []string)
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.openai.com/v1/embeddings", bytes.NewBuffer(jsonData))
+	req, err := http.NewRequestWithContext(ctx, "POST", p.endpoint, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
