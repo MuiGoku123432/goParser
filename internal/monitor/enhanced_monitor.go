@@ -52,6 +52,8 @@ func NewEnhancedMonitor(config EnhancedConfig) (*EnhancedMonitor, error) {
 		pauseChan: make(chan bool),
 	}
 
+	em.fileHandler = em.processFile
+
 	// Initialize batch processor if enabled
 	if config.EnableBatching {
 		em.batchProcessor = NewBatchProcessor(
