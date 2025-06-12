@@ -17,15 +17,7 @@ type MonitorAPI struct {
 	monitor  *monitor.EnhancedMonitor
 	router   *mux.Router
 	upgrader websocket.Upgrader
-	events   chan MonitorEvent
-}
-
-// MonitorEvent represents an event from the monitor
-type MonitorEvent struct {
-	Type      string    `json:"type"`
-	FilePath  string    `json:"file_path"`
-	Timestamp time.Time `json:"timestamp"`
-	Details   any       `json:"details,omitempty"`
+	events   chan monitor.MonitorEvent
 }
 
 // NewMonitorAPI creates a new monitor API server
@@ -40,12 +32,14 @@ func NewMonitorAPI(m *monitor.EnhancedMonitor) *MonitorAPI {
 				return true
 			},
 		},
-		events: make(chan MonitorEvent, 100),
+		events: make(chan monitor.MonitorEvent, 100),
 	}
 
 	api.setupRoutes()
 	// Apply CORS middleware so the API can be called from the web viewer.
 	api.router.Use(corsMiddleware)
+	// Forward monitor events to connected WebSocket clients
+	api.monitor.SetEventPublisher(api.PublishEvent)
 	return api
 }
 
@@ -208,7 +202,7 @@ func (api *MonitorAPI) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	defer conn.Close()
 
 	// Send initial connection event
-	welcomeEvent := MonitorEvent{
+	welcomeEvent := monitor.MonitorEvent{
 		Type:      "connected",
 		Timestamp: time.Now(),
 		Details: map[string]interface{}{
@@ -229,7 +223,7 @@ func (api *MonitorAPI) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 }
 
 // PublishEvent publishes an event to WebSocket clients
-func (api *MonitorAPI) PublishEvent(event MonitorEvent) {
+func (api *MonitorAPI) PublishEvent(event monitor.MonitorEvent) {
 	select {
 	case api.events <- event:
 		// Event sent
