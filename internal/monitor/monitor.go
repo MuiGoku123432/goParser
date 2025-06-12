@@ -21,15 +21,16 @@ import (
 
 // Monitor watches for file changes and updates the graph
 type Monitor struct {
-	rootPath     string
-	watcher      *fsnotify.Watcher
-	driver       *driver.TreeSitterDriver
-	graphClient  GraphClient // Changed from interface{}
-	embeddingGen *embeddings.CodeEmbeddingGenerator
-	fileTracker  *FileTracker
-	stopChan     chan struct{}
-	wg           sync.WaitGroup
-	fileHandler  func(context.Context, string)
+	rootPath       string
+	watcher        *fsnotify.Watcher
+	driver         *driver.TreeSitterDriver
+	graphClient    GraphClient // Changed from interface{}
+	embeddingGen   *embeddings.CodeEmbeddingGenerator
+	fileTracker    *FileTracker
+	stopChan       chan struct{}
+	wg             sync.WaitGroup
+	fileHandler    func(context.Context, string)
+	eventPublisher func(MonitorEvent)
 }
 
 // GraphClient interface that all database clients must implement
@@ -85,6 +86,11 @@ func NewMonitor(config Config) (*Monitor, error) {
 	}
 
 	return monitor, nil
+}
+
+// SetEventPublisher configures a callback for publishing monitor events.
+func (m *Monitor) SetEventPublisher(publisher func(MonitorEvent)) {
+	m.eventPublisher = publisher
 }
 
 // Start begins monitoring for file changes
@@ -154,34 +160,49 @@ func (m *Monitor) watch(ctx context.Context) {
 
 // handleEvent processes a file system event
 func (m *Monitor) handleEvent(ctx context.Context, event fsnotify.Event) {
-	// Check if it's a supported file
-	if !isSupportedFile(event.Name) {
-		return
-	}
-
 	switch {
-	case event.Op&fsnotify.Write == fsnotify.Write:
-		log.Printf("File modified: %s", event.Name)
-		m.fileHandler(ctx, event.Name)
-
 	case event.Op&fsnotify.Create == fsnotify.Create:
 		log.Printf("File created: %s", event.Name)
-		// Check if it's a directory
 		if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
 			if !shouldSkipDir(info.Name()) {
 				m.watcher.Add(event.Name)
 			}
-		} else {
-			m.fileHandler(ctx, event.Name)
+			if m.eventPublisher != nil {
+				m.eventPublisher(MonitorEvent{Type: "create_dir", FilePath: event.Name, Timestamp: time.Now()})
+			}
+			return
+		}
+		if !isSupportedFile(event.Name) {
+			return
+		}
+		m.fileHandler(ctx, event.Name)
+		if m.eventPublisher != nil {
+			m.eventPublisher(MonitorEvent{Type: "create", FilePath: event.Name, Timestamp: time.Now()})
+		}
+
+	case event.Op&fsnotify.Write == fsnotify.Write:
+		if !isSupportedFile(event.Name) {
+			return
+		}
+		log.Printf("File modified: %s", event.Name)
+		m.fileHandler(ctx, event.Name)
+		if m.eventPublisher != nil {
+			m.eventPublisher(MonitorEvent{Type: "modify", FilePath: event.Name, Timestamp: time.Now()})
 		}
 
 	case event.Op&fsnotify.Remove == fsnotify.Remove:
 		log.Printf("File removed: %s", event.Name)
 		m.handleRemoval(ctx, event.Name)
+		if m.eventPublisher != nil {
+			m.eventPublisher(MonitorEvent{Type: "remove", FilePath: event.Name, Timestamp: time.Now()})
+		}
 
 	case event.Op&fsnotify.Rename == fsnotify.Rename:
 		log.Printf("File renamed: %s", event.Name)
 		m.handleRemoval(ctx, event.Name)
+		if m.eventPublisher != nil {
+			m.eventPublisher(MonitorEvent{Type: "rename", FilePath: event.Name, Timestamp: time.Now()})
+		}
 	}
 }
 

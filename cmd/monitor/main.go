@@ -43,7 +43,6 @@ func main() {
 	var generateEmbeddings bool
 	var embeddingModel string
 	var embeddingDim int
-	var pollInterval int
 
 	flag.StringVar(&root, "root", ".", "Root directory of codebase to monitor")
 	flag.BoolVar(&useAGE, "use-age", false, "Use Apache AGE instead of Neo4j")
@@ -51,7 +50,6 @@ func main() {
 	flag.BoolVar(&generateEmbeddings, "embeddings", false, "Generate embeddings for code chunks")
 	flag.StringVar(&embeddingModel, "embedding-model", "text-embedding-3-small", "OpenAI embedding model to use")
 	flag.IntVar(&embeddingDim, "embedding-dim", 1536, "Embedding dimension")
-	flag.IntVar(&pollInterval, "poll-interval", 5, "Polling interval in seconds (0 to disable polling)")
 	flag.Parse()
 
 	// Ensure the root path exists

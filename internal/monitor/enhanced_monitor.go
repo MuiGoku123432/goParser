@@ -23,9 +23,8 @@ type EnhancedMonitor struct {
 	metrics        *MetricsCollector
 
 	// Control
-	pauseChan chan bool
-	isPaused  bool
-	pauseMu   sync.RWMutex
+	isPaused bool
+	pauseMu  sync.RWMutex
 }
 
 // EnhancedConfig extends the basic config
@@ -47,9 +46,8 @@ func NewEnhancedMonitor(config EnhancedConfig) (*EnhancedMonitor, error) {
 	}
 
 	em := &EnhancedMonitor{
-		Monitor:   baseMonitor,
-		metrics:   NewMetricsCollector(),
-		pauseChan: make(chan bool),
+		Monitor: baseMonitor,
+		metrics: NewMetricsCollector(),
 	}
 
 	em.fileHandler = em.processFile
