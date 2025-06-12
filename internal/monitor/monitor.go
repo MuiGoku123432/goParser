@@ -29,6 +29,7 @@ type Monitor struct {
 	fileTracker  *FileTracker
 	stopChan     chan struct{}
 	wg           sync.WaitGroup
+	fileHandler  func(context.Context, string)
 }
 
 // GraphClient interface that all database clients must implement
@@ -75,6 +76,8 @@ func NewMonitor(config Config) (*Monitor, error) {
 		fileTracker:  NewFileTracker(config.RootPath),
 		stopChan:     make(chan struct{}),
 	}
+
+	monitor.fileHandler = monitor.processFile
 
 	// Load existing file state
 	if err := monitor.fileTracker.LoadState(); err != nil {
@@ -159,7 +162,7 @@ func (m *Monitor) handleEvent(ctx context.Context, event fsnotify.Event) {
 	switch {
 	case event.Op&fsnotify.Write == fsnotify.Write:
 		log.Printf("File modified: %s", event.Name)
-		m.processFile(ctx, event.Name)
+		m.fileHandler(ctx, event.Name)
 
 	case event.Op&fsnotify.Create == fsnotify.Create:
 		log.Printf("File created: %s", event.Name)
@@ -169,7 +172,7 @@ func (m *Monitor) handleEvent(ctx context.Context, event fsnotify.Event) {
 				m.watcher.Add(event.Name)
 			}
 		} else {
-			m.processFile(ctx, event.Name)
+			m.fileHandler(ctx, event.Name)
 		}
 
 	case event.Op&fsnotify.Remove == fsnotify.Remove:
