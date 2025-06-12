@@ -8,11 +8,14 @@ import (
 	"goParse/internal/driver"
 	"goParse/internal/embeddings"
 	"goParse/internal/model"
+	"goParse/internal/monitor"
 	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 )
 
 // GraphClient interface that both Neo4j and AGE clients implement
@@ -84,6 +87,7 @@ func main() {
 	var generateEmbeddings bool
 	var embeddingModel string
 	var embeddingDim int
+	var workers int
 	flag.StringVar(&root, "root", ".", "Root directory of codebase to parse (e.g. ~/projects/vscode)")
 	flag.BoolVar(&createIndexes, "create-indexes", true, "Create database indexes for better performance")
 	flag.BoolVar(&useAGE, "use-age", false, "Use Apache AGE instead of Neo4j")
@@ -91,6 +95,7 @@ func main() {
 	flag.BoolVar(&generateEmbeddings, "embeddings", false, "Generate embeddings for code chunks")
 	flag.StringVar(&embeddingModel, "embedding-model", "text-embedding-3-small", "OpenAI embedding model to use")
 	flag.IntVar(&embeddingDim, "embedding-dim", 1536, "Embedding dimension")
+	flag.IntVar(&workers, "workers", runtime.NumCPU(), "Number of parallel workers")
 	flag.Parse()
 
 	// Ensure the root path exists
@@ -142,6 +147,12 @@ func main() {
 	// 4) Instantiate the Tree-sitter driver
 	tsDriver := driver.NewTreeSitterDriver()
 
+	// Initialize file tracker for resume capability
+	fileTracker := monitor.NewFileTracker(root)
+	if err := fileTracker.LoadState(); err != nil {
+		log.Printf("Warning: failed to load previous state: %v", err)
+	}
+
 	// 5) Set up embedding generator if requested
 	var embeddingGen *embeddings.CodeEmbeddingGenerator
 	if generateEmbeddings {
@@ -188,40 +199,24 @@ func main() {
 		Errors        int
 		Embeddings    int
 	}{}
+	var statsMu sync.Mutex
+	var stateMu sync.Mutex
 
-	// 5) Walk the directory tree, skipping "noise" directories
-	err = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-
-		// If it's a directory to skip, return SkipDir
-		if info.IsDir() {
-			if skipDirs[info.Name()] {
-				log.Printf("Skipping directory: %s", path)
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
-		// If not a supported extension, skip
-		ext := filepath.Ext(path)
-		if !supportedExts[ext] {
-			return nil
-		}
-
-		// Convert to relative path for cleaner storage
+	processFile := func(path string) {
+		// Convert to relative path
 		relPath, err := filepath.Rel(root, path)
 		if err != nil {
 			relPath = path
 		}
 
-		// 6) Parse the file with Tree-sitter
+		// Parse the file with Tree-sitter
 		pf, parseErr := tsDriver.Parse(path)
 		if parseErr != nil {
 			log.Printf("Parse error (%s): %v", relPath, parseErr)
+			statsMu.Lock()
 			stats.Errors++
-			return nil // continue walking
+			statsMu.Unlock()
+			return
 		}
 
 		// Update file path to relative path
@@ -231,7 +226,9 @@ func main() {
 		if err := graphClient.UpsertFile(ctx, pf.FilePath, pf.Language); err != nil {
 			log.Printf("Failed to upsert file %s: %v", pf.FilePath, err)
 		} else {
+			statsMu.Lock()
 			stats.Files++
+			statsMu.Unlock()
 		}
 
 		// 8) Upsert Imports
@@ -240,7 +237,9 @@ func main() {
 			if err := graphClient.UpsertImport(ctx, imp); err != nil {
 				log.Printf("Failed to upsert import %s in %s: %v", imp.Module, pf.FilePath, err)
 			} else {
+				statsMu.Lock()
 				stats.Imports++
+				statsMu.Unlock()
 			}
 		}
 
@@ -250,7 +249,9 @@ func main() {
 			if err := graphClient.UpsertFunction(ctx, fn); err != nil {
 				log.Printf("Failed to upsert function %s in %s: %v", fn.Name, pf.FilePath, err)
 			} else {
+				statsMu.Lock()
 				stats.Functions++
+				statsMu.Unlock()
 			}
 		}
 
@@ -260,7 +261,9 @@ func main() {
 			if err := graphClient.UpsertVariable(ctx, v); err != nil {
 				log.Printf("Failed to upsert variable %s in %s: %v", v.Name, pf.FilePath, err)
 			} else {
+				statsMu.Lock()
 				stats.Variables++
+				statsMu.Unlock()
 			}
 		}
 
@@ -270,7 +273,9 @@ func main() {
 			if err := graphClient.UpsertType(ctx, t); err != nil {
 				log.Printf("Failed to upsert type %s in %s: %v", t.Name, pf.FilePath, err)
 			} else {
+				statsMu.Lock()
 				stats.Types++
+				statsMu.Unlock()
 			}
 		}
 
@@ -280,7 +285,9 @@ func main() {
 			if err := graphClient.UpsertInterface(ctx, i); err != nil {
 				log.Printf("Failed to upsert interface %s in %s: %v", i.Name, pf.FilePath, err)
 			} else {
+				statsMu.Lock()
 				stats.Interfaces++
+				statsMu.Unlock()
 			}
 		}
 
@@ -290,7 +297,9 @@ func main() {
 			if err := graphClient.UpsertClass(ctx, c); err != nil {
 				log.Printf("Failed to upsert class %s in %s: %v", c.Name, pf.FilePath, err)
 			} else {
+				statsMu.Lock()
 				stats.Classes++
+				statsMu.Unlock()
 			}
 		}
 
@@ -300,7 +309,9 @@ func main() {
 			if err := graphClient.UpsertConstant(ctx, c); err != nil {
 				log.Printf("Failed to upsert constant %s in %s: %v", c.Name, pf.FilePath, err)
 			} else {
+				statsMu.Lock()
 				stats.Constants++
+				statsMu.Unlock()
 			}
 		}
 
@@ -310,7 +321,9 @@ func main() {
 			if err := graphClient.UpsertJSXElement(ctx, jsx); err != nil {
 				log.Printf("Failed to upsert JSX element %s in %s: %v", jsx.TagName, pf.FilePath, err)
 			} else {
+				statsMu.Lock()
 				stats.JSXElements++
+				statsMu.Unlock()
 			}
 		}
 
@@ -320,7 +333,9 @@ func main() {
 			if err := graphClient.UpsertCSSRule(ctx, css); err != nil {
 				log.Printf("Failed to upsert CSS rule %s in %s: %v", css.Selector, pf.FilePath, err)
 			} else {
+				statsMu.Lock()
 				stats.CSSRules++
+				statsMu.Unlock()
 			}
 		}
 
@@ -328,17 +343,17 @@ func main() {
 		for _, fc := range pf.FunctionCalls {
 			fc.CallerFile = relPath
 			if fc.TargetFile != "" {
-				// Convert target file to relative path
 				targetRel, err := filepath.Rel(root, fc.TargetFile)
 				if err == nil {
 					fc.TargetFile = targetRel
 				}
 			}
 			if err := graphClient.UpsertFunctionCall(ctx, fc); err != nil {
-				log.Printf("Failed to upsert function call %s->%s in %s: %v",
-					fc.CallerFunc, fc.CalledFunc, pf.FilePath, err)
+				log.Printf("Failed to upsert function call %s->%s in %s: %v", fc.CallerFunc, fc.CalledFunc, pf.FilePath, err)
 			} else {
+				statsMu.Lock()
 				stats.FunctionCalls++
+				statsMu.Unlock()
 			}
 		}
 
@@ -348,7 +363,9 @@ func main() {
 			if err := graphClient.UpsertTypeUsage(ctx, tu); err != nil {
 				log.Printf("Failed to upsert type usage %s in %s: %v", tu.UsedType, pf.FilePath, err)
 			} else {
+				statsMu.Lock()
 				stats.TypeUsages++
+				statsMu.Unlock()
 			}
 		}
 
@@ -356,10 +373,11 @@ func main() {
 		for _, e := range pf.Extends {
 			e.FilePath = relPath
 			if err := graphClient.UpsertExtends(ctx, e); err != nil {
-				log.Printf("Failed to upsert extends %s->%s in %s: %v",
-					e.ChildName, e.ParentName, pf.FilePath, err)
+				log.Printf("Failed to upsert extends %s->%s in %s: %v", e.ChildName, e.ParentName, pf.FilePath, err)
 			} else {
+				statsMu.Lock()
 				stats.Extends++
+				statsMu.Unlock()
 			}
 		}
 
@@ -367,28 +385,26 @@ func main() {
 		for _, i := range pf.Implements {
 			i.FilePath = relPath
 			if err := graphClient.UpsertImplements(ctx, i); err != nil {
-				log.Printf("Failed to upsert implements %s->%s in %s: %v",
-					i.ClassName, i.InterfaceName, pf.FilePath, err)
+				log.Printf("Failed to upsert implements %s->%s in %s: %v", i.ClassName, i.InterfaceName, pf.FilePath, err)
 			} else {
+				statsMu.Lock()
 				stats.Implements++
+				statsMu.Unlock()
 			}
 		}
 
 		// 21) Generate embeddings if requested
 		if generateEmbeddings && embeddingGen != nil {
-			// Read the file content
 			fileContent, err := ioutil.ReadFile(path)
 			if err != nil {
 				log.Printf("Failed to read file content for embeddings %s: %v", relPath, err)
 			} else {
-				// Create parsed file data for embedding generation
 				parsedFileData := embeddings.ParsedFileData{
 					FilePath:    relPath,
 					Language:    pf.Language,
 					FileContent: string(fileContent),
 				}
 
-				// Convert entities to embedding format
 				for _, fn := range pf.Funcs {
 					parsedFileData.Functions = append(parsedFileData.Functions, embeddings.FunctionData{
 						Name:      fn.Name,
@@ -416,7 +432,7 @@ func main() {
 				for _, iface := range pf.Interfaces {
 					parsedFileData.Interfaces = append(parsedFileData.Interfaces, embeddings.InterfaceData{
 						Name:       iface.Name,
-						Content:    "", // Would need line numbers to extract
+						Content:    "",
 						IsExport:   iface.IsExport,
 						Properties: iface.Properties,
 					})
@@ -446,24 +462,81 @@ func main() {
 					})
 				}
 
-				// Process embeddings
 				if err := embeddingGen.ProcessFile(ctx, parsedFileData); err != nil {
 					log.Printf("Failed to generate embeddings for %s: %v", relPath, err)
 				} else {
-					// Count chunks created
 					chunks := embeddings.CreateCodeChunks(parsedFileData)
+					statsMu.Lock()
 					stats.Embeddings += len(chunks)
+					statsMu.Unlock()
 				}
 			}
 		}
 
-		// Log summary for this file
+		if err := fileTracker.UpdateState(path); err != nil {
+			log.Printf("Failed to update state for %s: %v", relPath, err)
+		} else {
+			stateMu.Lock()
+			if err := fileTracker.SaveState(); err != nil {
+				log.Printf("Failed to save state: %v", err)
+			}
+			stateMu.Unlock()
+		}
+
 		log.Printf("Processed %s: %d functions, %d imports, %d types, %d classes, %d JSX elements, %d CSS rules",
 			relPath, len(pf.Funcs), len(pf.Imports), len(pf.Types), len(pf.Classes),
 			len(pf.JSXElements), len(pf.CSSRules))
+	}
 
+	// 5) Walk the directory tree and dispatch files to workers
+	fileChan := make(chan string, workers*2)
+	var walkWg sync.WaitGroup
+
+	// Worker goroutines
+	for i := 0; i < workers; i++ {
+		walkWg.Add(1)
+		go func() {
+			defer walkWg.Done()
+			for p := range fileChan {
+				processFile(p)
+			}
+		}()
+	}
+
+	// Walk the filesystem and send files to be processed
+	err = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if info.IsDir() {
+			if skipDirs[info.Name()] {
+				log.Printf("Skipping directory: %s", path)
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		if !supportedExts[filepath.Ext(path)] {
+			return nil
+		}
+
+		changed, chErr := fileTracker.HasChanged(path)
+		if chErr != nil {
+			relPath, _ := filepath.Rel(root, path)
+			log.Printf("State check failed for %s: %v", relPath, chErr)
+			return nil
+		}
+		if !changed {
+			return nil
+		}
+
+		fileChan <- path
 		return nil
 	})
+
+	close(fileChan)
+	walkWg.Wait()
 
 	if err != nil {
 		log.Fatalf("Error walking directory: %v", err)
@@ -516,7 +589,13 @@ func main() {
 						log.Printf("    %s: %d", lang, count)
 					}
 				}
+
 			}
 		}
+	}
+
+	// Final state save
+	if err := fileTracker.SaveState(); err != nil {
+		log.Printf("Failed to save state: %v", err)
 	}
 }

@@ -25,6 +25,7 @@ A comprehensive code analysis tool that parses TypeScript, JavaScript, and CSS c
 - **Incremental Processing**: Efficient handling of large codebases
 - **Batch Operations**: Optimized database insertions
 - **Multiple Workers**: Concurrent processing support
+- **Resumable Parsing**: Automatically resumes from the last saved state (.goparse_state.json)
 - **Resource Management**: Proper connection pooling and cleanup
 
 ## 🏗️ Architecture
@@ -190,7 +191,9 @@ GRANT CREATE PROPERTY GRAPH TO codeanalysis;
   -embeddings \
   -embedding-model text-embedding-3-small \
   -embedding-dim 1536
+  -workers 8
 ```
+Progress is saved to `.goparse_state.json` and the parser automatically resumes if interrupted.
 
 ### Command Line Options
 
@@ -203,6 +206,7 @@ GRANT CREATE PROPERTY GRAPH TO codeanalysis;
 | `-embeddings` | `false` | Generate embeddings for code chunks |
 | `-embedding-model` | `text-embedding-3-small` | OpenAI embedding model to use |
 | `-embedding-dim` | `1536` | Embedding dimension |
+| `-workers` | `runtime.NumCPU()` | Number of parallel workers |
 
 ## 📊 Supported File Types
 
