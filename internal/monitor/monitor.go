@@ -199,9 +199,19 @@ func (m *Monitor) handleEvent(ctx context.Context, event fsnotify.Event) {
 
 	case event.Op&fsnotify.Rename == fsnotify.Rename:
 		log.Printf("File renamed: %s", event.Name)
-		m.handleRemoval(ctx, event.Name)
-		if m.eventPublisher != nil {
-			m.eventPublisher(MonitorEvent{Type: "rename", FilePath: event.Name, Timestamp: time.Now()})
+		// If the file still exists at the same path, treat this as a modification
+		if _, err := os.Stat(event.Name); err == nil {
+			if isSupportedFile(event.Name) {
+				m.fileHandler(ctx, event.Name)
+				if m.eventPublisher != nil {
+					m.eventPublisher(MonitorEvent{Type: "modify", FilePath: event.Name, Timestamp: time.Now()})
+				}
+			}
+		} else {
+			m.handleRemoval(ctx, event.Name)
+			if m.eventPublisher != nil {
+				m.eventPublisher(MonitorEvent{Type: "rename", FilePath: event.Name, Timestamp: time.Now()})
+			}
 		}
 	}
 }
