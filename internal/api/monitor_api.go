@@ -14,14 +14,14 @@ import (
 
 // MonitorAPI provides HTTP API for the monitor
 type MonitorAPI struct {
-	monitor  *monitor.EnhancedMonitor
+	monitor  *monitor.EnhancedMonitorV2
 	router   *mux.Router
 	upgrader websocket.Upgrader
 	events   chan monitor.MonitorEvent
 }
 
 // NewMonitorAPI creates a new monitor API server
-func NewMonitorAPI(m *monitor.EnhancedMonitor) *MonitorAPI {
+func NewMonitorAPI(m *monitor.EnhancedMonitorV2) *MonitorAPI {
 	api := &MonitorAPI{
 		monitor: m,
 		router:  mux.NewRouter(),

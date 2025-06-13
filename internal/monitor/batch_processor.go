@@ -18,6 +18,8 @@ type BatchProcessor struct {
 	processFunc    ProcessBatchFunc
 	lastFlush      time.Time
 	metrics        *BatchMetrics
+	flushChan      chan struct{} // Channel to trigger immediate flush
+	ctx            context.Context
 }
 
 // FileChange represents a pending file change
@@ -59,6 +61,7 @@ func NewBatchProcessor(batchSize int, flushInterval time.Duration, processFunc P
 		processFunc:    processFunc,
 		lastFlush:      time.Now(),
 		metrics:        &BatchMetrics{},
+		flushChan:      make(chan struct{}, 1),
 	}
 }
 
@@ -69,24 +72,38 @@ func (bp *BatchProcessor) Add(change FileChange) {
 
 	// Update or add the change (latest change wins)
 	bp.pendingChanges[change.Path] = change
+	log.Printf("Batch processor: Added %s to batch (current size: %d)", change.Path, len(bp.pendingChanges))
 
-	// Check if we should flush
+	// Check if we should flush based on batch size
 	if len(bp.pendingChanges) >= bp.batchSize {
-		go bp.flush(context.Background())
+		log.Printf("Batch processor: Batch size reached (%d), triggering flush", bp.batchSize)
+		// Non-blocking send to trigger flush
+		select {
+		case bp.flushChan <- struct{}{}:
+		default:
+		}
 	}
 }
 
 // Start starts the periodic flush routine
 func (bp *BatchProcessor) Start(ctx context.Context) {
+	bp.ctx = ctx
 	ticker := time.NewTicker(bp.flushInterval)
 	defer ticker.Stop()
+
+	log.Printf("Batch processor started (size: %d, interval: %v)", bp.batchSize, bp.flushInterval)
 
 	for {
 		select {
 		case <-ticker.C:
 			bp.checkAndFlush(ctx)
+		case <-bp.flushChan:
+			// Immediate flush requested
+			log.Println("Batch processor: Immediate flush requested")
+			bp.flush(ctx)
 		case <-ctx.Done():
 			// Final flush before shutdown
+			log.Println("Batch processor: Shutting down, final flush")
 			bp.flush(ctx)
 			return
 		}
@@ -96,11 +113,14 @@ func (bp *BatchProcessor) Start(ctx context.Context) {
 // checkAndFlush checks if a flush is needed based on time
 func (bp *BatchProcessor) checkAndFlush(ctx context.Context) {
 	bp.mu.Lock()
-	shouldFlush := len(bp.pendingChanges) > 0 &&
-		time.Since(bp.lastFlush) >= bp.flushInterval
+	pendingCount := len(bp.pendingChanges)
+	timeSinceLastFlush := time.Since(bp.lastFlush)
+	shouldFlush := pendingCount > 0 && timeSinceLastFlush >= bp.flushInterval
 	bp.mu.Unlock()
 
 	if shouldFlush {
+		log.Printf("Batch processor: Time-based flush (pending: %d, time since last: %v)",
+			pendingCount, timeSinceLastFlush)
 		bp.flush(ctx)
 	}
 }
@@ -113,19 +133,21 @@ func (bp *BatchProcessor) flush(ctx context.Context) {
 		return
 	}
 
-	// Extract changes
+	// Extract changes and create a copy to avoid holding the lock during processing
 	changes := make([]FileChange, 0, len(bp.pendingChanges))
 	for _, change := range bp.pendingChanges {
 		changes = append(changes, change)
 	}
 
-	// Clear pending changes
+	// Clear pending changes and update flush time
 	bp.pendingChanges = make(map[string]FileChange)
 	bp.lastFlush = time.Now()
 	bp.mu.Unlock()
 
 	// Process the batch
+	log.Printf("Batch processor: Flushing batch of %d changes", len(changes))
 	start := time.Now()
+
 	if err := bp.processFunc(ctx, changes); err != nil {
 		log.Printf("Batch processing error: %v", err)
 		bp.handleFailedBatch(changes)
@@ -136,19 +158,41 @@ func (bp *BatchProcessor) flush(ctx context.Context) {
 	}
 }
 
+// ForceFlush forces an immediate flush of pending changes
+func (bp *BatchProcessor) ForceFlush() {
+	select {
+	case bp.flushChan <- struct{}{}:
+		log.Println("Batch processor: Force flush requested")
+	default:
+		// Channel already has a flush request pending
+	}
+}
+
 // handleFailedBatch handles failed changes
 func (bp *BatchProcessor) handleFailedBatch(changes []FileChange) {
 	bp.mu.Lock()
 	defer bp.mu.Unlock()
+
+	retriedCount := 0
+	droppedCount := 0
 
 	for _, change := range changes {
 		change.Retries++
 		if change.Retries < 3 {
 			// Re-add for retry
 			bp.pendingChanges[change.Path] = change
+			retriedCount++
 		} else {
-			log.Printf("Failed to process %s after %d retries", change.Path, change.Retries)
+			log.Printf("Failed to process %s after %d retries, dropping", change.Path, change.Retries)
+			droppedCount++
 		}
+	}
+
+	if retriedCount > 0 {
+		log.Printf("Batch processor: Re-queued %d failed changes for retry", retriedCount)
+	}
+	if droppedCount > 0 {
+		log.Printf("Batch processor: Dropped %d changes after max retries", droppedCount)
 	}
 }
 
@@ -174,4 +218,11 @@ func (bp *BatchProcessor) GetMetrics() BatchMetrics {
 	bp.metrics.mu.RLock()
 	defer bp.metrics.mu.RUnlock()
 	return *bp.metrics
+}
+
+// GetPendingCount returns the number of pending changes
+func (bp *BatchProcessor) GetPendingCount() int {
+	bp.mu.Lock()
+	defer bp.mu.Unlock()
+	return len(bp.pendingChanges)
 }

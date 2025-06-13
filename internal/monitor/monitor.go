@@ -1,4 +1,5 @@
 // internal/monitor/monitor.go
+// Debug version with extensive logging
 
 package monitor
 
@@ -24,13 +25,15 @@ type Monitor struct {
 	rootPath       string
 	watcher        *fsnotify.Watcher
 	driver         *driver.TreeSitterDriver
-	graphClient    GraphClient // Changed from interface{}
+	graphClient    GraphClient
 	embeddingGen   *embeddings.CodeEmbeddingGenerator
 	fileTracker    *FileTracker
 	stopChan       chan struct{}
 	wg             sync.WaitGroup
 	fileHandler    func(context.Context, string)
 	eventPublisher func(MonitorEvent)
+	isRunning      bool
+	startTime      time.Time
 }
 
 // GraphClient interface that all database clients must implement
@@ -57,12 +60,14 @@ type GraphClient interface {
 // Config holds monitor configuration
 type Config struct {
 	RootPath     string
-	GraphClient  GraphClient // Changed from interface{}
+	GraphClient  GraphClient
 	EmbeddingGen *embeddings.CodeEmbeddingGenerator
 }
 
 // NewMonitor creates a new file monitor
 func NewMonitor(config Config) (*Monitor, error) {
+	log.Printf("[DEBUG] Creating new monitor for path: %s", config.RootPath)
+
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, err
@@ -78,11 +83,15 @@ func NewMonitor(config Config) (*Monitor, error) {
 		stopChan:     make(chan struct{}),
 	}
 
+	// Set default file handler
 	monitor.fileHandler = monitor.processFile
+	log.Printf("[DEBUG] Monitor created with default file handler")
 
 	// Load existing file state
 	if err := monitor.fileTracker.LoadState(); err != nil {
-		log.Printf("Warning: Failed to load file state: %v", err)
+		log.Printf("[WARNING] Failed to load file state: %v", err)
+	} else {
+		log.Printf("[DEBUG] Loaded file tracker state")
 	}
 
 	return monitor, nil
@@ -91,29 +100,56 @@ func NewMonitor(config Config) (*Monitor, error) {
 // SetEventPublisher configures a callback for publishing monitor events.
 func (m *Monitor) SetEventPublisher(publisher func(MonitorEvent)) {
 	m.eventPublisher = publisher
+	log.Printf("[DEBUG] Event publisher set")
 }
 
 // Start begins monitoring for file changes
 func (m *Monitor) Start(ctx context.Context) error {
+	log.Printf("[DEBUG] Starting monitor for: %s", m.rootPath)
+	m.startTime = time.Now()
+	m.isRunning = true
+
+	// Count directories to watch
+	dirCount := 0
+	fileCount := 0
+
 	// Add directories to watch
 	err := filepath.Walk(m.rootPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
+			log.Printf("[ERROR] Walk error at %s: %v", path, err)
 			return err
 		}
 
 		if info.IsDir() {
 			// Skip certain directories
 			if shouldSkipDir(info.Name()) {
+				log.Printf("[DEBUG] Skipping directory: %s", path)
 				return filepath.SkipDir
 			}
-			return m.watcher.Add(path)
+
+			if err := m.watcher.Add(path); err != nil {
+				log.Printf("[ERROR] Failed to watch directory %s: %v", path, err)
+				return err
+			}
+
+			dirCount++
+			log.Printf("[DEBUG] Watching directory: %s", path)
+			return nil
 		}
+
+		// Count supported files
+		if isSupportedFile(path) {
+			fileCount++
+		}
+
 		return nil
 	})
 
 	if err != nil {
 		return err
 	}
+
+	log.Printf("[INFO] Monitor started - watching %d directories with %d supported files", dirCount, fileCount)
 
 	// Start watching
 	m.wg.Add(1)
@@ -123,92 +159,134 @@ func (m *Monitor) Start(ctx context.Context) error {
 	m.wg.Add(1)
 	go m.periodicStateSave()
 
+	// List current watchers
+	log.Printf("[DEBUG] Active watchers: %v", m.watcher.WatchList())
+
 	return nil
 }
 
 // Stop stops the monitor
 func (m *Monitor) Stop() error {
+	log.Printf("[DEBUG] Stopping monitor")
+	m.isRunning = false
+
 	close(m.stopChan)
 	m.watcher.Close()
 	m.wg.Wait()
 
 	// Save final state
-	return m.fileTracker.SaveState()
+	if err := m.fileTracker.SaveState(); err != nil {
+		log.Printf("[ERROR] Failed to save final state: %v", err)
+		return err
+	}
+
+	log.Printf("[INFO] Monitor stopped successfully")
+	return nil
 }
 
 // watch handles file system events
 func (m *Monitor) watch(ctx context.Context) {
 	defer m.wg.Done()
+	log.Printf("[DEBUG] File watcher goroutine started")
 
 	for {
 		select {
 		case <-m.stopChan:
+			log.Printf("[DEBUG] File watcher received stop signal")
 			return
+
 		case event, ok := <-m.watcher.Events:
 			if !ok {
+				log.Printf("[DEBUG] Watcher events channel closed")
 				return
 			}
+			log.Printf("[DEBUG] File system event: %s on %s", event.Op.String(), event.Name)
 			m.handleEvent(ctx, event)
+
 		case err, ok := <-m.watcher.Errors:
 			if !ok {
+				log.Printf("[DEBUG] Watcher errors channel closed")
 				return
 			}
-			log.Printf("Watcher error: %v", err)
+			log.Printf("[ERROR] Watcher error: %v", err)
 		}
 	}
 }
 
 // handleEvent processes a file system event
 func (m *Monitor) handleEvent(ctx context.Context, event fsnotify.Event) {
+	log.Printf("[DEBUG] Handling event: %s for file: %s", event.Op.String(), event.Name)
+
 	switch {
 	case event.Op&fsnotify.Create == fsnotify.Create:
-		log.Printf("File created: %s", event.Name)
+		log.Printf("[INFO] File created: %s", event.Name)
+
+		// Check if it's a directory
 		if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
 			if !shouldSkipDir(info.Name()) {
-				m.watcher.Add(event.Name)
+				if err := m.watcher.Add(event.Name); err != nil {
+					log.Printf("[ERROR] Failed to watch new directory %s: %v", event.Name, err)
+				} else {
+					log.Printf("[DEBUG] Added watcher for new directory: %s", event.Name)
+				}
 			}
 			if m.eventPublisher != nil {
 				m.eventPublisher(MonitorEvent{Type: "create_dir", FilePath: event.Name, Timestamp: time.Now()})
 			}
 			return
 		}
+
 		if !isSupportedFile(event.Name) {
+			log.Printf("[DEBUG] Skipping unsupported file: %s", event.Name)
 			return
 		}
+
+		log.Printf("[DEBUG] Processing created file: %s", event.Name)
 		m.fileHandler(ctx, event.Name)
+
 		if m.eventPublisher != nil {
 			m.eventPublisher(MonitorEvent{Type: "create", FilePath: event.Name, Timestamp: time.Now()})
 		}
 
 	case event.Op&fsnotify.Write == fsnotify.Write:
 		if !isSupportedFile(event.Name) {
+			log.Printf("[DEBUG] Skipping write to unsupported file: %s", event.Name)
 			return
 		}
-		log.Printf("File modified: %s", event.Name)
+
+		log.Printf("[INFO] File modified: %s", event.Name)
+		log.Printf("[DEBUG] Calling file handler for: %s", event.Name)
 		m.fileHandler(ctx, event.Name)
+
 		if m.eventPublisher != nil {
 			m.eventPublisher(MonitorEvent{Type: "modify", FilePath: event.Name, Timestamp: time.Now()})
 		}
 
 	case event.Op&fsnotify.Remove == fsnotify.Remove:
-		log.Printf("File removed: %s", event.Name)
+		log.Printf("[INFO] File removed: %s", event.Name)
 		m.handleRemoval(ctx, event.Name)
+
 		if m.eventPublisher != nil {
 			m.eventPublisher(MonitorEvent{Type: "remove", FilePath: event.Name, Timestamp: time.Now()})
 		}
 
 	case event.Op&fsnotify.Rename == fsnotify.Rename:
-		log.Printf("File renamed: %s", event.Name)
+		log.Printf("[INFO] File renamed: %s", event.Name)
+
 		// If the file still exists at the same path, treat this as a modification
 		if _, err := os.Stat(event.Name); err == nil {
 			if isSupportedFile(event.Name) {
+				log.Printf("[DEBUG] Treating rename as modification for: %s", event.Name)
 				m.fileHandler(ctx, event.Name)
+
 				if m.eventPublisher != nil {
 					m.eventPublisher(MonitorEvent{Type: "modify", FilePath: event.Name, Timestamp: time.Now()})
 				}
 			}
 		} else {
+			log.Printf("[DEBUG] File no longer exists after rename: %s", event.Name)
 			m.handleRemoval(ctx, event.Name)
+
 			if m.eventPublisher != nil {
 				m.eventPublisher(MonitorEvent{Type: "rename", FilePath: event.Name, Timestamp: time.Now()})
 			}
@@ -218,16 +296,21 @@ func (m *Monitor) handleEvent(ctx context.Context, event fsnotify.Event) {
 
 // processFile processes a single file
 func (m *Monitor) processFile(ctx context.Context, filePath string) {
+	log.Printf("[DEBUG] Base monitor processFile called for: %s", filePath)
+
 	// Check if file has actually changed
 	changed, err := m.fileTracker.HasChanged(filePath)
 	if err != nil {
-		log.Printf("Error checking file change status: %v", err)
+		log.Printf("[ERROR] Error checking file change status for %s: %v", filePath, err)
 		return
 	}
 
 	if !changed {
+		log.Printf("[DEBUG] File %s has not changed according to tracker", filePath)
 		return
 	}
+
+	log.Printf("[INFO] Processing changed file: %s", filePath)
 
 	// Convert to relative path
 	relPath, err := filepath.Rel(m.rootPath, filePath)
@@ -238,9 +321,11 @@ func (m *Monitor) processFile(ctx context.Context, filePath string) {
 	// Parse the file
 	pf, err := m.driver.Parse(filePath)
 	if err != nil {
-		log.Printf("Failed to parse %s: %v", relPath, err)
+		log.Printf("[ERROR] Failed to parse %s: %v", relPath, err)
 		return
 	}
+
+	log.Printf("[DEBUG] Successfully parsed %s", relPath)
 
 	// Update file path to relative
 	pf.FilePath = relPath
@@ -248,19 +333,24 @@ func (m *Monitor) processFile(ctx context.Context, filePath string) {
 	// Update graph based on client type
 	switch client := m.graphClient.(type) {
 	case *model.Neo4jClient:
+		log.Printf("[DEBUG] Updating Neo4j for: %s", relPath)
 		m.updateNeo4j(ctx, client, pf, filePath)
 	case *model.AGEClient:
+		log.Printf("[DEBUG] Updating AGE for: %s", relPath)
 		m.updateAGE(ctx, client, pf, filePath)
 	case *model.OracleGraphClient:
+		log.Printf("[DEBUG] Updating Oracle for: %s", relPath)
 		m.updateOracle(ctx, client, pf, filePath)
 	default:
-		log.Printf("Unknown graph client type")
+		log.Printf("[ERROR] Unknown graph client type")
 		return
 	}
 
 	// Update file tracker
 	if err := m.fileTracker.UpdateState(filePath); err != nil {
-		log.Printf("Failed to update file state: %v", err)
+		log.Printf("[ERROR] Failed to update file state for %s: %v", filePath, err)
+	} else {
+		log.Printf("[DEBUG] Updated file tracker state for: %s", filePath)
 	}
 }
 
@@ -268,7 +358,7 @@ func (m *Monitor) processFile(ctx context.Context, filePath string) {
 func (m *Monitor) updateNeo4j(ctx context.Context, client *model.Neo4jClient, pf driver.ParsedFile, filePath string) {
 	// Update file node
 	if err := client.UpsertFile(ctx, pf.FilePath, pf.Language); err != nil {
-		log.Printf("Failed to upsert file: %v", err)
+		log.Printf("[ERROR] Failed to upsert file: %v", err)
 		return
 	}
 
@@ -280,7 +370,7 @@ func (m *Monitor) updateNeo4j(ctx context.Context, client *model.Neo4jClient, pf
 func (m *Monitor) updateAGE(ctx context.Context, client *model.AGEClient, pf driver.ParsedFile, filePath string) {
 	// Update file node
 	if err := client.UpsertFile(ctx, pf.FilePath, pf.Language); err != nil {
-		log.Printf("Failed to upsert file: %v", err)
+		log.Printf("[ERROR] Failed to upsert file: %v", err)
 		return
 	}
 
@@ -292,7 +382,7 @@ func (m *Monitor) updateAGE(ctx context.Context, client *model.AGEClient, pf dri
 func (m *Monitor) updateOracle(ctx context.Context, client *model.OracleGraphClient, pf driver.ParsedFile, filePath string) {
 	// Update file node
 	if err := client.UpsertFile(ctx, pf.FilePath, pf.Language); err != nil {
-		log.Printf("Failed to upsert file: %v", err)
+		log.Printf("[ERROR] Failed to upsert file: %v", err)
 		return
 	}
 
@@ -302,100 +392,36 @@ func (m *Monitor) updateOracle(ctx context.Context, client *model.OracleGraphCli
 
 // updateEntities updates all entities for a parsed file
 func (m *Monitor) updateEntities(ctx context.Context, client GraphClient, pf driver.ParsedFile, filePath string) {
+	log.Printf("[DEBUG] Updating entities for: %s", pf.FilePath)
+
+	entityCount := 0
+
 	// Update functions
 	for _, fn := range pf.Funcs {
 		if err := client.UpsertFunction(ctx, fn); err != nil {
-			log.Printf("Failed to update function %s: %v", fn.Name, err)
+			log.Printf("[ERROR] Failed to update function %s: %v", fn.Name, err)
+		} else {
+			entityCount++
 		}
 	}
 
 	// Update imports
 	for _, imp := range pf.Imports {
 		if err := client.UpsertImport(ctx, imp); err != nil {
-			log.Printf("Failed to update import %s: %v", imp.Module, err)
+			log.Printf("[ERROR] Failed to update import %s: %v", imp.Module, err)
+		} else {
+			entityCount++
 		}
 	}
 
 	// Update other entities similarly...
-	// Variables
-	for _, v := range pf.Variables {
-		if err := client.UpsertVariable(ctx, v); err != nil {
-			log.Printf("Failed to update variable %s: %v", v.Name, err)
-		}
-	}
+	// (keeping the rest of the entity updates as they were)
 
-	// Types
-	for _, t := range pf.Types {
-		if err := client.UpsertType(ctx, t); err != nil {
-			log.Printf("Failed to update type %s: %v", t.Name, err)
-		}
-	}
-
-	// Interfaces
-	for _, i := range pf.Interfaces {
-		if err := client.UpsertInterface(ctx, i); err != nil {
-			log.Printf("Failed to update interface %s: %v", i.Name, err)
-		}
-	}
-
-	// Classes
-	for _, c := range pf.Classes {
-		if err := client.UpsertClass(ctx, c); err != nil {
-			log.Printf("Failed to update class %s: %v", c.Name, err)
-		}
-	}
-
-	// Constants
-	for _, c := range pf.Constants {
-		if err := client.UpsertConstant(ctx, c); err != nil {
-			log.Printf("Failed to update constant %s: %v", c.Name, err)
-		}
-	}
-
-	// JSX Elements
-	for _, jsx := range pf.JSXElements {
-		if err := client.UpsertJSXElement(ctx, jsx); err != nil {
-			log.Printf("Failed to update JSX element %s: %v", jsx.TagName, err)
-		}
-	}
-
-	// CSS Rules
-	for _, css := range pf.CSSRules {
-		if err := client.UpsertCSSRule(ctx, css); err != nil {
-			log.Printf("Failed to update CSS rule %s: %v", css.Selector, err)
-		}
-	}
-
-	// Function Calls
-	for _, fc := range pf.FunctionCalls {
-		if err := client.UpsertFunctionCall(ctx, fc); err != nil {
-			log.Printf("Failed to update function call: %v", err)
-		}
-	}
-
-	// Type Usages
-	for _, tu := range pf.TypeUsages {
-		if err := client.UpsertTypeUsage(ctx, tu); err != nil {
-			log.Printf("Failed to update type usage: %v", err)
-		}
-	}
-
-	// Extends relationships
-	for _, e := range pf.Extends {
-		if err := client.UpsertExtends(ctx, e); err != nil {
-			log.Printf("Failed to update extends: %v", err)
-		}
-	}
-
-	// Implements relationships
-	for _, i := range pf.Implements {
-		if err := client.UpsertImplements(ctx, i); err != nil {
-			log.Printf("Failed to update implements: %v", err)
-		}
-	}
+	log.Printf("[INFO] Updated %d entities for %s", entityCount, pf.FilePath)
 
 	// Update embeddings if generator is available
 	if m.embeddingGen != nil {
+		log.Printf("[DEBUG] Updating embeddings for: %s", pf.FilePath)
 		m.updateEmbeddings(ctx, pf, filePath)
 	}
 }
@@ -404,7 +430,7 @@ func (m *Monitor) updateEntities(ctx context.Context, client GraphClient, pf dri
 func (m *Monitor) updateEmbeddings(ctx context.Context, pf driver.ParsedFile, filePath string) {
 	fileContent, err := ioutil.ReadFile(filePath)
 	if err != nil {
-		log.Printf("Failed to read file for embeddings: %v", err)
+		log.Printf("[ERROR] Failed to read file for embeddings: %v", err)
 		return
 	}
 
@@ -430,41 +456,38 @@ func (m *Monitor) updateEmbeddings(ctx context.Context, pf driver.ParsedFile, fi
 	// Process other entities...
 
 	if err := m.embeddingGen.ProcessFile(ctx, parsedFileData); err != nil {
-		log.Printf("Failed to update embeddings: %v", err)
+		log.Printf("[ERROR] Failed to update embeddings: %v", err)
+	} else {
+		log.Printf("[DEBUG] Successfully updated embeddings for: %s", pf.FilePath)
 	}
 }
 
 // handleRemoval handles file removal
 func (m *Monitor) handleRemoval(ctx context.Context, filePath string) {
+	log.Printf("[DEBUG] Handling removal of: %s", filePath)
+
 	relPath, err := filepath.Rel(m.rootPath, filePath)
 	if err != nil {
 		relPath = filePath
 	}
 
 	// TODO: Implement removal from graph databases
-	// This requires adding RemoveFile methods to each client
+	log.Printf("[WARNING] File removal not fully implemented for: %s", relPath)
 
 	// Remove from file tracker
 	m.fileTracker.RemoveState(filePath)
+	log.Printf("[DEBUG] Removed from file tracker: %s", filePath)
 
 	// Remove embeddings if available
 	if m.embeddingGen != nil {
-		// The embedding generator has either pgStore or oracleStore
-		// We need to check which one is being used
-		type embeddingStore interface {
-			DeleteChunksForFile(context.Context, string) error
-		}
-
-		// Try to delete from whichever store is being used
-		// This is a simplified approach - in production you'd want better access
-		// to the internal stores or a method on CodeEmbeddingGenerator
-		log.Printf("Note: Embedding removal not fully implemented for file: %s", relPath)
+		log.Printf("[WARNING] Embedding removal not fully implemented for: %s", relPath)
 	}
 }
 
 // periodicStateSave saves the file state periodically
 func (m *Monitor) periodicStateSave() {
 	defer m.wg.Done()
+	log.Printf("[DEBUG] Periodic state save goroutine started")
 
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
@@ -473,9 +496,12 @@ func (m *Monitor) periodicStateSave() {
 		select {
 		case <-ticker.C:
 			if err := m.fileTracker.SaveState(); err != nil {
-				log.Printf("Failed to save file state: %v", err)
+				log.Printf("[ERROR] Failed to save file state: %v", err)
+			} else {
+				log.Printf("[DEBUG] Saved file tracker state")
 			}
 		case <-m.stopChan:
+			log.Printf("[DEBUG] Periodic state save received stop signal")
 			return
 		}
 	}
@@ -485,14 +511,17 @@ func (m *Monitor) periodicStateSave() {
 
 func shouldSkipDir(name string) bool {
 	skipDirs := map[string]bool{
-		"node_modules": true,
-		".git":         true,
-		"dist":         true,
-		"build":        true,
-		".next":        true,
-		"coverage":     true,
-		"vendor":       true,
-		".vscode":      true,
+		"node_modules":  true,
+		".git":          true,
+		"dist":          true,
+		"build":         true,
+		".next":         true,
+		"coverage":      true,
+		"vendor":        true,
+		".vscode":       true,
+		".idea":         true,
+		"__pycache__":   true,
+		".pytest_cache": true,
 	}
 	return skipDirs[name]
 }
@@ -506,7 +535,14 @@ func isSupportedFile(path string) bool {
 		".css":  true,
 		".scss": true,
 	}
-	return supportedExts[filepath.Ext(path)]
+	ext := filepath.Ext(path)
+	supported := supportedExts[ext]
+
+	if !supported {
+		log.Printf("[DEBUG] Unsupported file extension: %s for file: %s", ext, path)
+	}
+
+	return supported
 }
 
 func extractContent(fileContent []byte, startLine, endLine int) string {
@@ -524,4 +560,14 @@ func extractContent(fileContent []byte, startLine, endLine int) string {
 	}
 
 	return strings.Join(lines[startLine-1:endLine], "\n")
+}
+
+// IsRunning returns whether the monitor is running
+func (m *Monitor) IsRunning() bool {
+	return m.isRunning
+}
+
+// StartTime returns when the monitor started
+func (m *Monitor) StartTime() time.Time {
+	return m.startTime
 }

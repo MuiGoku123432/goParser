@@ -50,7 +50,9 @@ func NewEnhancedMonitor(config EnhancedConfig) (*EnhancedMonitor, error) {
 		metrics: NewMetricsCollector(),
 	}
 
-	em.fileHandler = em.processFile
+	// CRITICAL FIX: Override the base monitor's fileHandler
+	// This ensures the base monitor calls our enhanced processFile
+	baseMonitor.fileHandler = em.processFile
 
 	// Initialize batch processor if enabled
 	if config.EnableBatching {
@@ -99,6 +101,8 @@ func (em *EnhancedMonitor) Start(ctx context.Context) error {
 	// Start metrics updater
 	go em.updateMetrics(ctx)
 
+	log.Println("Enhanced monitor started with real-time file watching enabled")
+
 	return nil
 }
 
@@ -110,12 +114,16 @@ func (em *EnhancedMonitor) processFile(ctx context.Context, filePath string) {
 	em.pauseMu.RLock()
 	if em.isPaused {
 		em.pauseMu.RUnlock()
+		log.Printf("Monitor paused, skipping: %s", filePath)
 		return
 	}
 	em.pauseMu.RUnlock()
 
+	log.Printf("Enhanced monitor processing file change: %s", filePath)
+
 	// If batching is enabled, add to batch
 	if em.batchProcessor != nil {
+		log.Printf("Adding to batch: %s", filePath)
 		em.batchProcessor.Add(FileChange{
 			Path:      filePath,
 			Type:      ChangeTypeModify,
@@ -125,6 +133,7 @@ func (em *EnhancedMonitor) processFile(ctx context.Context, filePath string) {
 	}
 
 	// Otherwise process immediately
+	log.Printf("Processing immediately: %s", filePath)
 	em.processFileImmediate(ctx, filePath)
 
 	// Record metrics
@@ -142,10 +151,12 @@ func (em *EnhancedMonitor) processFileImmediate(ctx context.Context, filePath st
 	}
 
 	if !changed {
+		log.Printf("File hasn't changed, skipping: %s", filePath)
 		return
 	}
 
 	em.metrics.RecordChange()
+	log.Printf("File changed, processing: %s", filePath)
 
 	// Convert to relative path
 	relPath, err := filepath.Rel(em.rootPath, filePath)
@@ -172,10 +183,12 @@ func (em *EnhancedMonitor) processFileImmediate(ctx context.Context, filePath st
 			return
 		}
 
+		log.Printf("Entity changes detected in %s, applying changes", relPath)
 		// Apply only the changes
 		em.applyEntityChanges(ctx, changes)
 	} else {
 		// Apply all entities (original behavior)
+		log.Printf("Updating all entities in %s", relPath)
 		em.updateAllEntities(ctx, pf, filePath)
 	}
 
@@ -183,6 +196,8 @@ func (em *EnhancedMonitor) processFileImmediate(ctx context.Context, filePath st
 	if err := em.fileTracker.UpdateState(filePath); err != nil {
 		log.Printf("Failed to update file state: %v", err)
 	}
+
+	log.Printf("Successfully processed file: %s", relPath)
 }
 
 // updateAllEntities updates all entities in a parsed file
@@ -198,8 +213,10 @@ func (em *EnhancedMonitor) processBatch(ctx context.Context, changes []FileChang
 	for _, change := range changes {
 		switch change.Type {
 		case ChangeTypeCreate, ChangeTypeModify:
+			log.Printf("Batch processing file: %s", change.Path)
 			em.processFileImmediate(ctx, change.Path)
 		case ChangeTypeDelete:
+			log.Printf("Batch processing removal: %s", change.Path)
 			em.handleRemoval(ctx, change.Path)
 		}
 	}
@@ -210,6 +227,7 @@ func (em *EnhancedMonitor) processBatch(ctx context.Context, changes []FileChang
 // applyEntityChanges applies only the changed entities
 func (em *EnhancedMonitor) applyEntityChanges(ctx context.Context, changes *EntityChanges) {
 	// This is much more efficient than updating everything
+	log.Printf("Applying entity changes for: %s", changes.FilePath)
 
 	// Apply based on graph client type
 	switch client := em.graphClient.(type) {
@@ -298,6 +316,8 @@ func (em *EnhancedMonitor) watchGit(ctx context.Context) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
+	log.Println("Git watcher started")
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -309,6 +329,10 @@ func (em *EnhancedMonitor) watchGit(ctx context.Context) {
 				continue
 			}
 
+			if len(changes) > 0 {
+				log.Printf("Git detected %d file changes", len(changes))
+			}
+
 			for _, change := range changes {
 				// Only process supported files
 				if !isSupportedFile(change.Path) {
@@ -317,8 +341,10 @@ func (em *EnhancedMonitor) watchGit(ctx context.Context) {
 
 				switch change.Status {
 				case GitStatusAdded, GitStatusModified:
+					log.Printf("Git change detected: %s (%s)", change.Path, change.Status)
 					em.processFile(ctx, change.Path)
 				case GitStatusDeleted:
+					log.Printf("Git deletion detected: %s", change.Path)
 					em.handleRemoval(ctx, change.Path)
 				}
 			}
@@ -340,7 +366,13 @@ func (em *EnhancedMonitor) updateMetrics(ctx context.Context) {
 			count := len(em.fileTracker.GetAllStates())
 			em.metrics.UpdateFilesMonitored(count)
 
-			// Could also update memory usage, goroutines, etc.
+			// Log metrics periodically
+			snapshot := em.metrics.GetSnapshot()
+			log.Printf("Monitor metrics - Files: %d, Processed: %d, Changes: %d, Errors: %d",
+				snapshot.FilesMonitored,
+				snapshot.FilesProcessed,
+				snapshot.ChangesDetected,
+				snapshot.Errors)
 		}
 	}
 }

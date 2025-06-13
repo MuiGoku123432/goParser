@@ -116,7 +116,7 @@ func main() {
 	}
 
 	// Create the enhanced monitor
-	codeMonitor, err := monitor.NewEnhancedMonitor(monitorConfig)
+	codeMonitor, err := monitor.NewEnhancedMonitorV2(monitorConfig)
 	if err != nil {
 		log.Fatalf("Failed to create enhanced monitor: %v", err)
 	}
